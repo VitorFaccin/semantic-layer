@@ -1,0 +1,33 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — customer registry. "Active" is registry status, not buying behaviour.
+views:
+  - name: customers
+    description: "Clientes finais, no grão de cliente. Use para o tamanho e a composição da base cadastrada (segmento, setor, UF). Para quem efetivamente COMPROU use sales.buying_customers_count, que é uma ordem de grandeza menor."
+    meta:
+      ai_context: >
+        LEITURA: "ativo" aqui é status CADASTRAL (is_active), não comportamento de compra. A
+        base cadastrada é muito maior que a base compradora.
+
+        DESAMBIGUAÇÃO: "quantos clientes ativos temos?" tem duas leituras — cadastro ativo (aqui)
+        ou cliente que comprou no período (sales.buying_customers_count). Diga qual está usando.
+{{ m.access_policy_transversal() }}
+    cubes:
+      - join_path: base_customers
+        includes: "*"
+
+    folders:
+      - name: "Medidas"
+        includes:
+          - customers_count
+          - active_customers_count
+      - name: "Recortes"
+        includes:
+          - customer_id
+          - company_name
+          - segment
+          - industry
+          - state
+          - is_active
+      - name: "Tempo"
+        includes:
+          - created_at

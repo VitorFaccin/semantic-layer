@@ -1,0 +1,49 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — commission ledger at installment grain. Margin %, settlement and reconciliation only.
+views:
+  - name: commissions
+    description: "Razão de comissões no grão comissão×parcela. Use para MARGEM em % (margin_rate), para o valor já LIQUIDADO ao representante e para conciliação. O TOTAL de comissão em R$ NÃO sai daqui — sai de sales.total_commission_amount, no grão de venda."
+    meta:
+      ai_context: >
+        LEITURA: o grão é comissão×parcela, então o valor da comissão APARECE REPETIDO em várias
+        linhas da mesma venda. Por isso: (a) a margem é confiável, porque numerador e denominador
+        estão no mesmo grão e a repetição se cancela; (b) somar valor para obter um total NÃO é —
+        use sales.total_commission_amount. A measure avg_installments_per_sale mostra exatamente
+        o fator de superconta, para tornar a armadilha auditável.
+
+        DESAMBIGUAÇÃO: comissão DEVIDA (competência, view sales) × comissão LIQUIDADA (caixa,
+        settled_amount aqui). Pergunte qual antes de responder.
+
+        NUNCA: reportar commission_numerator como "comissão total da empresa".
+{{ m.access_policy_transversal() }}
+    cubes:
+      - join_path: base_commissions
+        includes: "*"
+{{ m.rep_attribute_block("base_commissions.base_reps") }}
+
+    folders:
+      - name: "Medidas — margem"
+        includes:
+          - margin_rate
+          - commission_numerator
+          - commission_base_amount
+      - name: "Medidas — liquidação"
+        includes:
+          - settled_amount
+          - canceled_commissions_count
+          - distinct_sales_count
+      - name: "Diagnóstico de grão"
+        includes:
+          - avg_installments_per_sale
+      - name: "Recortes"
+        includes:
+          - product_line
+          - rep_id
+          - installment
+          - settlement_status
+          - base_reps_region
+          - base_reps_territory
+      - name: "Tempo"
+        includes:
+          - booked_at
+          - settled_at

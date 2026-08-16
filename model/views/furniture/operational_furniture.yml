@@ -1,0 +1,58 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — Móveis deal pipeline. DOMAIN-GATED: the access_policy below names the domain group
+# INLINE (d_furniture_10) because Cube would JSON-quote an interpolated slug — see macros.jinja.
+# Only a caller whose JWT carries the "furniture" domain (or the "*" wildcard, or is_admin) sees it.
+views:
+  - name: operational_furniture
+    description: "Esteira de negócios de Móveis, no grão de negócio: etapas, status, motivo de perda, valor negociado e tempo até fechar. Use para entender ONDE o pipeline trava e POR QUE se perde. Para volume de vendas concluídas use a view sales."
+    meta:
+      ai_context: >
+        LEITURA: uma linha por negócio da esteira de Móveis. status separa decidido (won/lost) de
+        aberto; os negócios ABERTOS são foto do estado atual, não fluxo do período.
+
+        DESAMBIGUAÇÃO: win_rate exclui os abertos do denominador de propósito — eles ainda não
+        foram decididos. Incluí-los diluiria a taxa.
+
+        NUNCA: usar deals_count como "vendas do período" — venda concluída vive em sales, e o
+        deal pode ter sido criado num mês e fechado em outro.
+    access_policy:
+      - group: d_furniture_10
+        member_level:
+          includes: "*"
+    cubes:
+      - join_path: base_operational_furniture
+        includes: "*"
+{{ m.rep_attribute_block("base_operational_furniture.base_reps") }}
+
+    folders:
+      - name: "Medidas — pipeline"
+        includes:
+          - deals_count
+          - won_deals_count
+          - lost_deals_count
+          - open_deals_count
+          - win_rate
+      - name: "Medidas — valor e tempo"
+        includes:
+          - total_deal_amount
+          - avg_days_to_close
+      - name: "Recortes — negócio"
+        includes:
+          - deal_id
+          - status
+          - stage_name
+          - lost_reason
+      - name: "Recortes — específicos da linha"
+        includes:
+          - is_custom_order
+          - lead_time_days
+      - name: "Recortes — representante"
+        includes:
+          - rep_id
+          - base_reps_region
+          - base_reps_territory
+          - base_reps_account_manager
+      - name: "Tempo"
+        includes:
+          - created_at
+          - closed_at

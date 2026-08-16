@@ -1,0 +1,36 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — portal engagement series.
+views:
+  - name: logins
+    description: "Engajamento dos representantes no portal, no grão rep×mês: logins no mês, dias ativos e quantos reps distintos acessaram. Use para a SÉRIE de engajamento; para o último acesso de cada rep use reps.last_portal_login (um único carimbo, não série)."
+    meta:
+      ai_context: >
+        LEITURA: uma linha por rep por mês. logged_reps_count com granularidade mensal é o MAU do
+        portal e é NÃO-aditivo entre meses — o mesmo rep repete; recalcule por janela em vez de
+        somar.
+
+        DESAMBIGUAÇÃO: esta view responde "quantos acessaram no mês X"; reps.last_portal_login
+        responde "quando fulano acessou pela última vez". Perguntas de série vêm para cá.
+{{ m.access_policy_transversal() }}
+    cubes:
+      - join_path: base_rep_logins
+        includes: "*"
+{{ m.rep_attribute_block("base_rep_logins.base_reps") }}
+
+    folders:
+      - name: "Medidas"
+        includes:
+          - total_logins
+          - logged_reps_count
+          - avg_active_days
+      - name: "Recortes"
+        includes:
+          - rep_id
+          - logins_in_month
+          - active_days
+          - base_reps_region
+          - base_reps_territory
+          - base_reps_tier
+      - name: "Tempo"
+        includes:
+          - reference_month

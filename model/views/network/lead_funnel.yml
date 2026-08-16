@@ -1,0 +1,39 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — the recruitment JOURNEY (transition log), as opposed to the current-state view.
+views:
+  - name: lead_funnel
+    description: "Log de transições de etapa dos leads de recrutamento, no grão da transição. Use para JORNADA: quantos alcançaram cada etapa, quantos foram reativados e quando as mudanças ocorreram. Para o estoque atual por etapa use a view leads."
+    meta:
+      ai_context: >
+        LEITURA: uma linha por MUDANÇA de etapa, não por lead — um mesmo lead aparece várias
+        vezes. Para contar leads use moved_leads_count (count distinct), não transitions_count.
+
+        DESAMBIGUAÇÃO: o eixo temporal correto aqui é changed_at (quando a transição ocorreu),
+        diferente de leads.created_at (quando o lead entrou). "Reativações em 2026" usa changed_at.
+{{ m.access_policy_transversal() }}
+    cubes:
+      - join_path: base_lead_events
+        includes: "*"
+      - join_path: base_lead_events.base_leads
+        prefix: true
+        includes:
+          - channel
+          - status
+          - lead_score
+
+    folders:
+      - name: "Medidas"
+        includes:
+          - transitions_count
+          - moved_leads_count
+          - reactivations_count
+      - name: "Recortes"
+        includes:
+          - lead_id
+          - from_status
+          - to_status
+          - base_leads_channel
+          - base_leads_status
+      - name: "Tempo"
+        includes:
+          - changed_at

@@ -1,0 +1,60 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — transversal orders view. The canonical counting rule lives in the cube; this view
+# also exposes the audit measures so the exclusion is always reconcilable.
+views:
+  - name: orders
+    description: "Pedidos de TODAS as linhas de produto, no grão de pedido. Use orders_count para 'pedidos gerados' (contagem canônica: só raiz, sem autocompra) e total_assumed_value para o potencial estimado. all_orders_count e self_purchase_orders_count existem APENAS para auditoria/reconciliação. Abra por product_line. Para vendas concluídas use a view sales; para cotações use quotes."
+    meta:
+      ai_context: >
+        LEITURA: uma linha por pedido. Pedido FILHO é desdobramento do pai (reenvio do mesmo
+        negócio) e a contagem canônica usa só os raiz; ela também EXCLUI autocompra (cliente =
+        próprio rep). orders_count e as medidas de valor já aplicam os dois cortes.
+
+        DESAMBIGUAÇÃO: "valor dos pedidos" é valor ESTIMADO (total_assumed_value), não receita —
+        para receita use sales.total_sale_amount.
+
+        NUNCA: comparar all_orders_count com orders_count como se medissem a mesma coisa — a
+        diferença é estrutural (filhos + autocompra), não divergência de dado. A parcela excluída
+        está nomeada em self_purchase_orders_count, e orders_count + self_purchase_orders_count =
+        total de pedidos-raiz, então a reconciliação sempre fecha.
+{{ m.access_policy_transversal() }}
+    cubes:
+      - join_path: base_orders
+        includes: "*"
+{{ m.rep_attribute_block("base_orders.base_reps") }}
+      - join_path: base_orders.base_products
+        prefix: true
+        includes:
+          - product_level
+          - root_product_id
+          - category
+
+    folders:
+      - name: "Medidas — canônicas"
+        includes:
+          - orders_count
+          - total_assumed_value
+          - ordering_reps_count
+          - ordering_customers_count
+      - name: "Medidas — auditoria"
+        includes:
+          - all_orders_count
+          - self_purchase_orders_count
+          - child_orders_count
+      - name: "Recortes — pedido"
+        includes:
+          - order_id
+          - product_line
+          - status_category
+          - order_level
+          - is_self_purchase
+      - name: "Recortes — representante"
+        includes:
+          - rep_id
+          - base_reps_tier
+          - base_reps_region
+          - base_reps_territory
+          - base_reps_account_manager
+      - name: "Tempo"
+        includes:
+          - created_at

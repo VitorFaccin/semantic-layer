@@ -1,0 +1,42 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — recruitment funnel (candidates to become reps).
+views:
+  - name: leads
+    description: "Leads de RECRUTAMENTO de representantes, no grão de lead (estado atual). Use para o estoque por etapa, taxa de conversão de candidato a rep, motivos de recusa e score de qualificação. Para a jornada (quantos passaram por cada etapa, reativações) use a view lead_funnel."
+    meta:
+      ai_context: >
+        LEITURA: lead aqui é CANDIDATO A REPRESENTANTE (recrutamento), nunca negócio de cliente —
+        negócio de cliente vive nas views operational_*. São dois funis distintos e não devem ser
+        misturados.
+
+        DESAMBIGUAÇÃO: "quantos leads temos?" pode ser a base histórica inteira (leads_count) ou o
+        funil vivo (segment in_progress_leads). Diga qual está usando.
+
+        NUNCA: ler a etapa atual como jornada — um convertido já não aparece em 'Contacted',
+        embora tenha passado por lá; para etapas atingidas use lead_funnel.
+{{ m.access_policy_transversal() }}
+    cubes:
+      - join_path: base_leads
+        includes: "*"
+
+    folders:
+      - name: "Medidas"
+        includes:
+          - leads_count
+          - converted_leads_count
+          - rejected_leads_count
+          - conversion_rate
+          - avg_lead_score
+          - avg_days_to_conversion
+      - name: "Recortes"
+        includes:
+          - lead_id
+          - status
+          - channel
+          - rejection_reason
+          - lead_score
+          - rep_id
+      - name: "Tempo"
+        includes:
+          - created_at
+          - converted_at

@@ -1,0 +1,40 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — top of the commercial funnel, covering EVERY product line.
+views:
+  - name: quotes
+    description: "Cotações (propostas) enviadas a clientes, no grão de cotação. Cobre TODAS as linhas de produto — use para volume de propostas, valor cotado e conversão cotação→pedido de toda a empresa. Para a conversão DENTRO da esteira (só as linhas com pipeline próprio) use a view funnel."
+    meta:
+      ai_context: >
+        LEITURA: uma linha por cotação. order_id NULL = a cotação não virou pedido; é semântica,
+        não lacuna — o segment converted_quotes já aplica o corte.
+
+        DESAMBIGUAÇÃO: existem DUAS conversões cotação→pedido no modelo. Aqui
+        (quote_to_order_rate) cobre todas as linhas; em funnel.conv_quote_to_order cobre apenas as
+        linhas com esteira. Diga qual está usando.
+
+        NUNCA: apresentar total_quoted_value como receita — é potencial estimado.
+{{ m.access_policy_transversal() }}
+    cubes:
+      - join_path: base_quotes
+        includes: "*"
+{{ m.rep_attribute_block("base_quotes.base_reps") }}
+
+    folders:
+      - name: "Medidas"
+        includes:
+          - total_quotes
+          - converted_quotes_count
+          - quote_to_order_rate
+          - total_quoted_value
+          - avg_quoted_value
+      - name: "Recortes"
+        includes:
+          - quote_id
+          - product_line
+          - rep_id
+          - customer_id
+          - base_reps_region
+          - base_reps_territory
+      - name: "Tempo"
+        includes:
+          - quoted_at

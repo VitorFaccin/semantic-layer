@@ -1,0 +1,42 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — cross-fact view (orders x sales per rep) over the event-grain cube.
+views:
+  - name: rep_activity
+    description: "Atividade comercial por representante, no grão de evento (pedido ou venda). Use para cruzar pedidos e vendas do MESMO rep no mesmo período — quantidade, valor, conversão e clientes atendidos. Existe porque cruzar dois fatos por rep via join produziria produto cartesiano."
+    meta:
+      ai_context: >
+        LEITURA: uma linha por EVENTO, tipado como pedido ou venda. Sempre recorte por event_type
+        (ou use os segments order_events / sale_events) antes de contar, senão as duas metades se
+        misturam.
+
+        DESAMBIGUAÇÃO: order_to_sale_rate compara EVENTOS DO PERÍODO, não a jornada de um pedido
+        específico — as vendas do mês podem vir de pedidos de meses anteriores. Em janelas curtas
+        a taxa distorce e pode passar de 100%; use 3 meses ou mais, ou a view funnel para coorte.
+
+        NUNCA: somar as contagens de pedido e venda como se fossem o mesmo universo.
+{{ m.access_policy_transversal() }}
+    cubes:
+      - join_path: base_rep_events
+        includes: "*"
+{{ m.rep_attribute_block("base_rep_events.base_reps") }}
+
+    folders:
+      - name: "Medidas"
+        includes:
+          - rep_orders_count
+          - rep_sales_count
+          - order_to_sale_rate
+          - distinct_customers_count
+          - active_reps_count
+      - name: "Recortes"
+        includes:
+          - rep_id
+          - event_type
+          - product_line
+          - base_reps_tier
+          - base_reps_region
+          - base_reps_territory
+          - base_reps_account_manager
+      - name: "Tempo"
+        includes:
+          - event_date

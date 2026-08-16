@@ -1,0 +1,59 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — subscription revenue. LEVEL-40 FLOOR: payer PII and row-level amounts live here.
+views:
+  - name: subscription
+    description: "Assinatura da plataforma paga pelos representantes, no grão cobrança×NF — fonte canônica de RECEITA DE ASSINATURA (paid_amount, abra por competence_date mensal), inadimplência (overdue_amount), estorno e faturamento fiscal. Traz atributos do rep para recorte. Para comissão use sales; para o cadastro do rep use reps."
+    meta:
+      ai_context: >
+        LEITURA: o grão é cobrança×NF — cobrança com NF reemitida tem 2+ linhas com o valor
+        repetido, e TODAS as medidas financeiras já contam cada cobrança UMA vez e excluem
+        canceladas. Linha ausente de um rep = sem cobrança atribuída, não inexistência.
+
+        DESAMBIGUAÇÃO: "assinatura do mês" tem dois eixos — competência (competence_date, padrão)
+        ou caixa (settled_at); pergunte se a resposta muda a decisão. Plano anual entra INTEIRO no
+        mês pago: receita mensalizada NÃO existe nesta base — diga isso em vez de aproximar.
+
+        NUNCA: somar charge_amount linha a linha (a NF reemitida duplica); usar valor de NF como
+        receita (é recorte fiscal); ler NF cancelada como dinheiro devolvido (para isso é
+        refunded_amount).
+{{ m.access_policy_transversal(min_level=40) }}
+    cubes:
+      - join_path: base_subscription_charges
+        includes: "*"
+{{ m.rep_attribute_block("base_subscription_charges.base_reps") }}
+
+    folders:
+      - name: "Medidas — receita"
+        includes:
+          - paid_amount
+          - paying_subscribers
+          - paid_charges_count
+          - avg_subscription_ticket
+      - name: "Medidas — risco"
+        includes:
+          - overdue_amount
+          - refunded_amount
+      - name: "Medidas — fiscal"
+        includes:
+          - invoiced_amount
+          - canceled_invoice_amount
+      - name: "Recortes — cobrança"
+        includes:
+          - charge_id
+          - charge_status
+          - plan
+          - payment_method
+          - is_primary_charge_row
+      - name: "Recortes — nota fiscal"
+        includes:
+          - invoice_id
+          - invoice_status
+      - name: "Pagante (PII)"
+        includes:
+          - payer_name
+          - payer_tax_id
+      - name: "Tempo"
+        includes:
+          - competence_date
+          - due_date
+          - settled_at

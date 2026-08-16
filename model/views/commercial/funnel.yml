@@ -1,0 +1,41 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — chained journey funnel (cohort). Conversion rates only, never company volumes.
+views:
+  - name: funnel
+    description: "Funil encadeado cotação→pedido→aprovado→venda, no grão da jornada. Use para as TAXAS DE CONVERSÃO entre etapas. Cobre apenas as linhas de produto com esteira própria — para volumes de toda a empresa use quotes, orders e sales."
+    meta:
+      ai_context: >
+        LEITURA: é COORTE, não fluxo do período — a venda é atribuída ao mês da jornada, não ao mês
+        em que fechou. Por isso os percentuais dos meses recentes ainda sobem conforme a coorte
+        amadurece; não leia isso como queda de performance.
+
+        DESAMBIGUAÇÃO: para "quantas vendas tivemos no mês" use sales.sales_count (fluxo do
+        período), não funnel_sales (coorte, cobertura parcial). Confundir os dois é o erro mais
+        comum nesta view.
+
+        NUNCA: usar as contagens daqui como volume da empresa — a cobertura é parcial por desenho.
+{{ m.access_policy_transversal() }}
+    cubes:
+      - join_path: base_funnel
+        includes: "*"
+
+    folders:
+      - name: "Medidas — etapas"
+        includes:
+          - funnel_quotes
+          - funnel_orders
+          - funnel_approved
+          - funnel_sales
+      - name: "Medidas — conversão"
+        includes:
+          - conv_quote_to_order
+          - conv_order_to_approved
+          - conv_approved_to_sale
+          - conv_quote_to_sale
+      - name: "Recortes"
+        includes:
+          - product_line
+          - cohort_month
+      - name: "Tempo"
+        includes:
+          - started_at

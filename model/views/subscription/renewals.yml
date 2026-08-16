@@ -1,0 +1,47 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — annual contract renewal. The denominator rule is the whole point of this view.
+views:
+  - name: renewals
+    description: "Ciclos anuais de contrato dos representantes, no grão assinante×ciclo. Use para a TAXA DE RENOVAÇÃO, para a carteira de vencimentos (quem vence nos próximos meses e ainda não renovou) e para dimensionar a receita em risco."
+    meta:
+      ai_context: >
+        LEITURA: foto diária. Os cortes "vigente" e "vencido" são relativos a HOJE e mudam a cada
+        rebuild. renewed_at é o eixo de "renovações no mês"; expected_renewal_at é o eixo da
+        carteira de vencimentos — não os troque.
+
+        DESAMBIGUAÇÃO: 'não renovado' NÃO é churn — inclui os ciclos ainda VIGENTES, que nem
+        podiam ter renovado. O corte de risco é o segment expired_not_renewed.
+
+        NUNCA: calcular taxa de renovação dividindo pelo total de ciclos. O denominador correto é
+        só os ciclos DECIDIDOS (renovados + vencidos sem renovar); incluir os vigentes dilui a
+        taxa e a subestima de forma grosseira.
+{{ m.access_policy_transversal(min_level=40) }}
+    cubes:
+      - join_path: base_renewals
+        includes: "*"
+{{ m.rep_attribute_block("base_renewals.base_reps", ["last_portal_login"]) }}
+
+    folders:
+      - name: "Medidas — renovação"
+        includes:
+          - renewal_rate
+          - renewed_cycles_count
+          - expired_not_renewed_count
+          - current_cycles_count
+          - cycles_count
+      - name: "Medidas — valor"
+        includes:
+          - total_cycle_value
+          - commission_at_risk
+      - name: "Recortes"
+        includes:
+          - cycle_id
+          - rep_id
+          - renewal_status
+          - expiry_status
+          - commission_last_12m
+      - name: "Tempo"
+        includes:
+          - started_at
+          - expected_renewal_at
+          - renewed_at

@@ -1,0 +1,86 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — transversal sales view served to the AI agent.
+# Exposes base_sales plus the standard rep attribute block for breakdowns.
+views:
+  - name: sales
+    description: "Vendas concluídas (faturadas) de TODAS as linhas de produto, no grão de venda. Use para volume vendido, ticket médio, quantidade de vendas e o TOTAL de comissão em R$ (aditivo, grão de venda). Abra por product_line para ver por linha; sem filtro é a visão comercial geral. Traz atributos do representante (tier, região, território, gerente) para recortes. Para MARGEM (%), valores liquidados e análise por parcela use a view commissions (grão comissão×parcela); para pedidos use orders; para cotações use quotes. A ausência de um produto/linha/rep aqui significa SEM venda registrada, NÃO que não exista — confirme existência em products, reps ou customers."
+    meta:
+      ai_context: >
+        LEITURA: uma linha por venda concluída — o grão é a VENDA, não a parcela nem o pedido. A
+        comissão aqui é a reconhecida no faturamento, não a paga (para paga use commissions).
+        Linha ausente = sem venda no recorte, nunca prova de que o produto, rep ou cliente não
+        existe; confirme em products, reps ou customers.
+
+        DESAMBIGUAÇÃO: "comissão do rep" pode ser a DEVIDA (aqui) ou a já LIQUIDADA (view
+        commissions). Se a pergunta não distinguir, pergunte antes de responder.
+
+        NUNCA: somar comissão a partir de commissions para conferir este total — aquele grão
+        repete o valor por parcela e superconta.
+{{ m.access_policy_transversal() }}
+    cubes:
+      - join_path: base_sales
+        includes: "*"
+{{ m.rep_attribute_block("base_sales.base_reps") }}
+      - join_path: base_sales.base_products
+        prefix: true
+        includes:
+          - product_level
+          - is_parent_product
+          - root_product_id
+          - category
+      - join_path: base_sales.base_customers
+        prefix: true
+        includes:
+          - segment
+          - industry
+
+    folders:
+      - name: "Medidas — vendas (R$)"
+        includes:
+          - total_sale_amount
+          - avg_ticket
+          - new_customer_revenue
+      - name: "Medidas — comissão (R$)"
+        includes:
+          - total_commission_amount
+          - total_commission_company_amount
+          - total_commission_rep_amount
+          # NESTED folder: the period-over-period family, grouped one level deeper so the
+          # commission folder stays readable when the agent lists members.
+          - name: "Análise temporal"
+            includes:
+              - revenue_trailing_12m
+              - revenue_prior_period
+              - revenue_growth_pct
+              - revenue_of_line
+              - revenue_share_of_line
+      - name: "Medidas — contagens"
+        includes:
+          - sales_count
+          - selling_reps_count
+          - buying_customers_count
+      - name: "Recortes — produto"
+        includes:
+          - product_line
+          - product_id
+          - base_products_category
+          - base_products_product_level
+          - base_products_is_parent_product
+          - base_products_root_product_id
+      - name: "Recortes — representante"
+        includes:
+          - rep_id
+          - base_reps_tier
+          - base_reps_rep_status
+          - base_reps_region
+          - base_reps_territory
+          - base_reps_account_manager
+          - base_reps_cohort
+      - name: "Recortes — cliente"
+        includes:
+          - customer_id
+          - base_customers_segment
+          - base_customers_industry
+      - name: "Tempo"
+        includes:
+          - sold_at
