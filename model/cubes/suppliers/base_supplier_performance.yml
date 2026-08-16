@@ -1,0 +1,109 @@
+# PRIVATE — supplier performance, grain = supplier x month.
+# The supply side of the business: who we buy from, how reliably they deliver, and what share of
+# our revenue depends on them. Supplier data never enters the transversal commercial views —
+# it lives here, gated by its own domain (see rbac.DOMAIN_TO_CATEGORY: suppliers maps to no
+# product line on purpose, so a supplier analyst gets no transversal rows).
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_supplier_performance
+    sql_table: {{ table('mart_suppliers', 'supplier_performance_monthly') }}
+    public: false
+    description: "Desempenho de fornecedores, no grão fornecedor×mês: valor comprado, prazo de entrega, entregas no prazo e defeitos."
+
+    dimensions:
+      - name: id
+        sql: "CONCAT({CUBE}.supplier_id, '-', {CUBE}.reference_month)"
+        type: string
+        primary_key: true
+        title: "ID da linha"
+        description: "Chave técnica do grão (fornecedor + mês). Para agrupar use supplier_id. String."
+      - name: supplier_id
+        sql: supplier_id
+        type: string
+        title: "ID do fornecedor"
+        description: "Identificador do fornecedor. Chave de join ao catálogo de produtos. String."
+      - name: supplier_name
+        sql: supplier_name
+        type: string
+        title: "Fornecedor"
+        description: "Nome do fornecedor. Use para exibição; para agrupar prefira supplier_id. String."
+      - name: product_line
+        sql: product_line
+        type: string
+        title: "Linha de produto"
+        description: "Linha de produto fornecida. Permite ver a dependência de fornecedor por linha."
+      - name: country
+        sql: country
+        type: string
+        title: "País"
+        description: "País de origem do fornecedor. Use para analisar exposição logística e cambial. String."
+      - name: reference_month
+        sql: "CAST(reference_month AS TIMESTAMP)"
+        type: time
+        title: "Mês de referência"
+        description: "Mês de referência da apuração. Use como timeDimension."
+
+    measures:
+      - name: purchase_amount
+        sql: purchase_amount
+        type: sum
+        format: currency
+        title: "Valor comprado"
+        description: "Soma do valor comprado do fornecedor (R$) no recorte. Grão fornecedor×mês; aditivo."
+        meta:
+          granularity: "fornecedor×mês"
+          additive: true
+      - name: suppliers_count
+        sql: supplier_id
+        type: count_distinct
+        format: number
+        title: "Qtd. de fornecedores"
+        description: "Fornecedores distintos no recorte. NÃO-aditivo."
+        meta:
+          additive: false
+      - name: avg_lead_time_days
+        sql: avg_lead_time_days
+        type: avg
+        format: number
+        title: "Prazo médio de entrega"
+        description: "Média de dias entre o pedido de compra e o recebimento. NÃO-aditivo (média) — recalcule por recorte."
+        meta:
+          additive: false
+      - name: delivered_on_time
+        sql: delivered_on_time
+        type: sum
+        format: number
+        title: "Entregas no prazo"
+        description: "Entregas realizadas dentro do prazo acordado. Numerador do on_time_rate. Aditivo."
+        meta:
+          additive: true
+      - name: total_deliveries
+        sql: total_deliveries
+        type: sum
+        format: number
+        title: "Total de entregas"
+        description: "Entregas realizadas no recorte. Denominador do on_time_rate. Aditivo."
+        meta:
+          additive: true
+      - name: defective_units
+        sql: defective_units
+        type: sum
+        format: number
+        title: "Unidades com defeito"
+        description: "Unidades recebidas com defeito. Numerador da taxa de defeito. Aditivo."
+        meta:
+          additive: true
+      - name: received_units
+        sql: received_units
+        type: sum
+        format: number
+        title: "Unidades recebidas"
+        description: "Unidades recebidas no recorte. Denominador da taxa de defeito. Aditivo."
+        meta:
+          additive: true
+{{ m.ratio_measure('on_time_rate', '{delivered_on_time}', '{total_deliveries}',
+   'Entregas no prazo em %: entregas dentro do prazo dividido pelo total. Métrica canônica de confiabilidade do fornecedor. NÃO-aditivo (razão): recalcule por recorte, nunca tire média de percentuais.',
+   'percent', 'Entrega no prazo (%)') }}
+{{ m.ratio_measure('defect_rate', '{defective_units}', '{received_units}',
+   'Taxa de defeito em %: unidades com defeito dividido por unidades recebidas. NÃO-aditivo (razão).',
+   'percent', 'Taxa de defeito (%)') }}

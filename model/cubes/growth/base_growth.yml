@@ -1,0 +1,135 @@
+# PRIVATE — rep ramp-up, grain = one row per rep (DAILY SNAPSHOT of the current state).
+# Event DATES (first_sale_at, reached_target_at) are historical facts and answer date-ranged
+# series. What this snapshot can NOT answer is STATE history — how a rep's tier evolved.
+#
+# NULL CONVENTION (declared, because it is a trap): the lifetime counters store zero as NULL —
+# the value 0 does not exist in those columns. "Reps with no sales" is a notSet filter, never
+# `= 0`, which would return an empty result set with no error.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_growth
+    sql_table: {{ table('mart_growth', 'rep_ramp_up') }}
+    public: false
+    description: "Rampa e ativação dos representantes, no grão de rep (foto diária do estado atual): marcos de faturamento, primeiras datas, canal de aquisição e contagens de vida."
+
+    joins:
+      - name: base_reps
+        relationship: many_to_one
+        sql: "{CUBE}.rep_id = {base_reps}.rep_id"
+
+    dimensions:
+      - name: rep_id
+        sql: rep_id
+        type: string
+        primary_key: true
+        title: "ID do rep"
+        description: "Identificador único do representante. Chave do grão e do join ao cadastro. String."
+      - name: acquisition_channel
+        sql: acquisition_channel
+        type: string
+        title: "Canal de aquisição"
+        description: "Canal por onde o rep foi recrutado. Use para comparar rampa por canal. String."
+        meta:
+          coverage: "NULL nas safras anteriores ao rastreio de canal — não é 'sem canal'"
+      - name: ramp_group
+        sql: ramp_group
+        type: string
+        title: "Grupo de rampa"
+        description: "Classificação de rampa do rep, derivada do score de admissão. É PERFIL DE ENTRADA, não produção — para produção use as views ranking_rep_*."
+        meta:
+          avoid: "não confunda com produção; para isso use ranking_rep_*"
+          values:
+            A: "perfil de entrada mais forte"
+            B: "perfil intermediário"
+            C: "perfil de entrada mais fraco ou sem score"
+      - name: lifetime_orders
+        sql: lifetime_orders
+        type: number
+        title: "Pedidos (vida)"
+        description: "Total acumulado de pedidos do rep na vida. Atributo para filtro/ordenação. NULL significa NENHUM pedido: o valor 0 não existe nesta coluna, então 'reps sem pedido' se filtra com notSet, nunca com `= 0`."
+        meta:
+          coverage: "NULL = nenhum pedido na vida; o valor 0 NÃO existe nesta coluna"
+          avoid: "não filtre `= 0` para achar quem não pediu (devolve zero linhas) — use notSet"
+      - name: lifetime_sales
+        sql: lifetime_sales
+        type: number
+        title: "Vendas (vida)"
+        description: "Total acumulado de vendas do rep na vida. NULL significa NENHUMA venda: o valor 0 não existe nesta coluna, então 'reps que nunca venderam' se filtra com notSet, nunca com `= 0`."
+        meta:
+          coverage: "NULL = nenhuma venda na vida; o valor 0 NÃO existe nesta coluna"
+          avoid: "não filtre `= 0` (devolve zero linhas silenciosamente) — use notSet"
+      - name: first_order_at
+        sql: "CAST(first_order_at AS TIMESTAMP)"
+        type: time
+        title: "Primeiro pedido"
+        description: "Data do primeiro pedido do rep. NULL = nunca originou. Use como timeDimension para séries de ativação."
+        meta:
+          coverage: "NULL = rep nunca originou — é semântica, não lacuna"
+      - name: first_sale_at
+        sql: "CAST(first_sale_at AS TIMESTAMP)"
+        type: time
+        title: "Primeira venda"
+        description: "Data da primeira venda do rep. NULL = nunca vendeu."
+        meta:
+          coverage: "NULL = rep nunca vendeu"
+      - name: reached_target_at
+        sql: "CAST(reached_target_at AS TIMESTAMP)"
+        type: time
+        title: "Atingiu a meta de rampa"
+        description: "Data em que o rep atingiu a meta de faturamento de rampa — o marco de referência. NULL = ainda não atingiu, que é a situação da maioria. Use como timeDimension para 'quantos atingiram a meta em março'."
+        meta:
+          coverage: "NULL = marco não atingido; é a situação normal, não dado faltante"
+      - name: days_to_target
+        sql: days_to_target
+        type: number
+        title: "Dias até a meta"
+        description: "Dias entre o onboarding e o atingimento da meta de rampa. NULL para quem não atingiu. Numérico."
+        meta:
+          coverage: "NULL para quem ainda não atingiu a meta"
+      - name: last_order_at
+        sql: "CAST(last_order_at AS TIMESTAMP)"
+        type: time
+        title: "Último pedido"
+        description: "Data do último pedido do rep. Use para achar quem parou de originar (filtro beforeDate). NULL = nunca originou."
+        meta:
+          coverage: "NULL = nunca originou"
+
+    segments:
+      - name: reached_target
+        sql: "{CUBE}.reached_target_at IS NOT NULL"
+        title: "Atingiram a meta"
+        description: "Reps que atingiram a meta de rampa. FICAM FORA os que ainda não atingiram."
+      - name: never_ordered
+        sql: "{CUBE}.first_order_at IS NULL"
+        title: "Nunca originaram"
+        description: "Reps que NUNCA geraram pedido. Combine com base_reps.active_reps para o recorte de ativação pendente — o alvo comercial mais óbvio."
+        meta:
+          synonyms: ["nunca pediu", "sem originação"]
+
+    measures:
+      - name: reps_count
+        sql: rep_id
+        type: count_distinct
+        format: number
+        title: "Qtd. de reps"
+        description: "Representantes distintos no recorte. NÃO-aditivo."
+        meta:
+          additive: false
+{{ m.filtered_count('reached_target_count', "{CUBE}.reached_target_at IS NOT NULL",
+   'Reps que atingiram a meta de rampa. Numerador da taxa de rampa. NÃO-aditivo.',
+   'rep_id', 'count_distinct', 'Atingiram a meta') }}
+{{ m.filtered_count('activated_reps_count', "{CUBE}.first_order_at IS NOT NULL",
+   'Reps que geraram ao menos um pedido na vida (ativados). NÃO-aditivo.',
+   'rep_id', 'count_distinct', 'Reps ativados') }}
+{{ m.ratio_measure('target_rate', '{reached_target_count}', '{reps_count}',
+   'Percentual de reps do recorte que atingiram a meta de rampa. Combine com a safra (cohort) para comparar turmas. NÃO-aditivo.',
+   'percent', 'Taxa de rampa') }}
+      - name: avg_days_to_target
+        sql: days_to_target
+        type: avg
+        format: number
+        title: "Dias médios até a meta"
+        description: "Média de dias do onboarding até a meta de rampa. Considera apenas quem ATINGIU — quem não atingiu fica fora da média, não entra como zero (o que a puxaria para cima artificialmente). NÃO-aditivo."
+        meta:
+          additive: false
+          coverage: "média apenas sobre quem atingiu a meta"

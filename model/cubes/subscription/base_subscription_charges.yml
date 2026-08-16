@@ -1,0 +1,244 @@
+# PRIVATE — rep subscription billing, grain = CHARGE x INVOICE.
+# Reps pay a platform fee; this is that ledger, joined to the fiscal document.
+# A charge whose invoice was re-issued has 2+ rows with the amount REPEATED, so every money
+# measure below is guarded by is_primary_charge_row (and excludes voided charges). Summing the
+# raw column instead over-counts.
+# PAYER PII lives here at its own grain, behind a level-40 floor on both views of this area.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_subscription_charges
+    sql_table: {{ table('core_billing', 'subscription_charges_invoices') }}
+    public: false
+    description: "Cobranças da assinatura dos representantes, no grão cobrança×nota fiscal. Fonte canônica de receita de assinatura, inadimplência e documento fiscal."
+
+    joins:
+      - name: base_reps
+        relationship: many_to_one
+        sql: "{CUBE}.rep_id = {base_reps}.rep_id"
+
+    dimensions:
+      - name: id
+        sql: id
+        type: string
+        primary_key: true
+        title: "ID da linha"
+        description: "Chave técnica da linha (cobrança×NF). Para identificar a cobrança use charge_id; para a NF, invoice_id. String."
+      - name: charge_id
+        sql: charge_id
+        type: string
+        title: "ID da cobrança"
+        description: "Identificador da cobrança no sistema de billing — a chave de reconciliação com a origem. String."
+      - name: invoice_id
+        sql: invoice_id
+        type: string
+        title: "ID da nota fiscal"
+        description: "Identificador da nota fiscal. NULL quando a cobrança ainda não foi faturada — não se emite nota do que não foi pago."
+        meta:
+          coverage: "NULL em cobranças sem nota emitida"
+      - name: is_primary_charge_row
+        sql: is_primary_charge_row
+        type: boolean
+        title: "Linha principal da cobrança"
+        description: "TRUE na linha canônica de cada cobrança. Existe porque uma NF reemitida cria linhas extras com o valor repetido: todas as medidas financeiras filtram por esta flag para contar cada cobrança UMA vez."
+        meta:
+          avoid: "não some valor sem este filtro — a NF reemitida duplicaria a linha"
+      - name: rep_id
+        sql: rep_id
+        type: string
+        title: "ID do rep"
+        description: "Representante dono da cobrança. Use para agrupar assinatura por rep. String."
+      - name: charge_status
+        sql: charge_status
+        type: string
+        title: "Situação da cobrança"
+        description: "Situação ATUAL da cobrança (o dinheiro, não a nota). Os segments desta área aplicam esses cortes prontos."
+        meta:
+          values:
+            paid: "paga e creditada"
+            confirmed: "pagamento confirmado, crédito a liquidar"
+            overdue: "vencida sem pagamento (inadimplência)"
+            pending: "aguardando pagamento, dentro do vencimento"
+            refunded: "paga e depois estornada"
+            voided: "cobrança cancelada/abandonada — excluída de todas as medidas"
+      - name: invoice_status
+        sql: invoice_status
+        type: string
+        title: "Status da NF"
+        description: "Status ATUAL da nota fiscal (o documento, não o dinheiro). NF cancelada NÃO significa cobrança inexistente: estorno e correção cancelam a nota e o dinheiro segue contado pela situação da cobrança."
+        meta:
+          avoid: "NF cancelada não é dinheiro devolvido — para isso use refunded_amount"
+          values:
+            authorized: "NF autorizada (vigente)"
+            canceled: "NF cancelada (estorno, correção ou cobrança abandonada)"
+            pending: "emissão pendente"
+      - name: plan
+        sql: plan
+        type: string
+        title: "Plano"
+        description: "Plano de assinatura inferido da cobrança. Plano anual entra INTEIRO no mês do pagamento — não existe receita mensalizada nesta base."
+        meta:
+          values:
+            Annual: "assinatura anual (paga de uma vez ou parcelada)"
+            Monthly: "cobrança mensal recorrente"
+      - name: payment_method
+        sql: payment_method
+        type: string
+        title: "Forma de pagamento"
+        description: "Meio de pagamento usado. Use para mix de recebimento. String."
+      - name: payer_name
+        sql: payer_name
+        type: string
+        title: "Nome do pagante"
+        description: "Nome/razão social do pagante. PII: acesso restrito por perfil. Use para conferência fiscal, nunca para agregação. String."
+      - name: payer_tax_id
+        sql: payer_tax_id
+        type: string
+        title: "Documento do pagante"
+        description: "Documento fiscal do pagante. PII forte: acesso restrito por perfil. String."
+      - name: charge_amount
+        sql: charge_amount
+        type: number
+        title: "Valor da cobrança (linha)"
+        description: "Valor da cobrança NA LINHA. Para totais use as measures — somar a coluna crua duplica a NF reemitida. Numérico."
+        meta:
+          avoid: "para totais use paid_amount / overdue_amount"
+      - name: competence_date
+        sql: "CAST(competence_date AS TIMESTAMP)"
+        type: time
+        title: "Data de competência"
+        description: "Competência do pagamento — o eixo canônico de 'assinatura do mês M'. Use como timeDimension principal da série mensal."
+      - name: due_date
+        sql: "CAST(due_date AS TIMESTAMP)"
+        type: time
+        title: "Data de vencimento"
+        description: "Vencimento da cobrança — o eixo da inadimplência e da carteira a vencer."
+      - name: settled_at
+        sql: "CAST(settled_at AS TIMESTAMP)"
+        type: time
+        title: "Data de liquidação"
+        description: "Quando o pagamento foi liquidado. NULL nas cobranças confirmadas ainda não liquidadas — não é falha de dado. Use para regime de caixa."
+        meta:
+          coverage: "NULL em cobranças confirmadas ainda não liquidadas"
+
+    segments:
+      - name: paid_charges
+        sql: "{CUBE}.is_primary_charge_row = TRUE AND {CUBE}.charge_status IN ('paid', 'confirmed')"
+        title: "Cobranças pagas"
+        description: "Cobranças PAGAS (recebidas ou confirmadas), já deduplicadas por cobrança. FICAM FORA vencidas, a vencer, estornadas e canceladas. É o mesmo corte embutido em paid_amount."
+      - name: overdue_charges
+        sql: "{CUBE}.is_primary_charge_row = TRUE AND {CUBE}.charge_status = 'overdue'"
+        title: "Cobranças vencidas"
+        description: "Cobranças VENCIDAS sem pagamento (inadimplência viva). FICAM FORA as canceladas/abandonadas, que não são cobrança a receber."
+      - name: refunded_charges
+        sql: "{CUBE}.is_primary_charge_row = TRUE AND {CUBE}.charge_status = 'refunded'"
+        title: "Cobranças estornadas"
+        description: "Cobranças pagas e depois ESTORNADAS ao cliente. A NF dessas cobranças aparece cancelada — é o ciclo normal do estorno, não inconsistência."
+
+    measures:
+      - name: paid_amount
+        sql: charge_amount
+        type: sum
+        format: currency
+        title: "Assinatura paga"
+        description: "Receita de assinatura PAGA em R$, contando cada cobrança uma única vez. Medida canônica de receita recorrente realizada — abra por competence_date mensal. Grão de cobrança; aditivo."
+        filters:
+          - sql: "{CUBE}.is_primary_charge_row = TRUE AND {CUBE}.charge_status IN ('paid', 'confirmed')"
+        meta:
+          granularity: "cobrança"
+          additive: true
+          synonyms: ["receita de assinatura", "assinatura paga"]
+          ai_context: >
+            LEITURA: já deduplicada por cobrança e sem canceladas. Plano anual entra INTEIRO no mês
+            pago — se a pergunta pedir receita mensalizada/reconhecida, isso NÃO existe nesta base;
+            diga isso em vez de aproximar.
+      - name: overdue_amount
+        sql: charge_amount
+        type: sum
+        format: currency
+        title: "Valor vencido"
+        description: "Valor em R$ das cobranças VENCIDAS sem pagamento (inadimplência viva), excluindo as abandonadas. Use com due_date como eixo. Grão de cobrança; aditivo."
+        filters:
+          - sql: "{CUBE}.is_primary_charge_row = TRUE AND {CUBE}.charge_status = 'overdue'"
+        meta:
+          granularity: "cobrança"
+          additive: true
+          synonyms: ["inadimplência", "valor em atraso"]
+      - name: refunded_amount
+        sql: charge_amount
+        type: sum
+        format: currency
+        title: "Valor estornado"
+        description: "Valor em R$ devolvido ao cliente. É a leitura de DINHEIRO devolvido — diferente de NF cancelada, que é apenas o documento fiscal anulado. Grão de cobrança; aditivo."
+        filters:
+          - sql: "{CUBE}.is_primary_charge_row = TRUE AND {CUBE}.charge_status = 'refunded'"
+        meta:
+          granularity: "cobrança"
+          additive: true
+      - name: paid_charges_count
+        sql: id
+        type: count
+        format: number
+        title: "Cobranças pagas"
+        description: "Número de cobranças pagas, uma vez por cobrança. É o divisor do ticket médio. Aditivo."
+        filters:
+          - sql: "{CUBE}.is_primary_charge_row = TRUE AND {CUBE}.charge_status IN ('paid', 'confirmed')"
+        meta:
+          additive: true
+      - name: paying_subscribers
+        sql: rep_id
+        type: count_distinct
+        format: number
+        title: "Assinantes pagantes"
+        description: "Representantes DISTINTOS com cobrança paga no recorte. Com competence_date mensal vira 'pagantes ativos no mês'. NÃO-aditivo entre períodos — o mesmo pagante repete; recalcule por janela."
+        filters:
+          - sql: "{CUBE}.is_primary_charge_row = TRUE AND {CUBE}.charge_status IN ('paid', 'confirmed')"
+        meta:
+          additive: false
+          synonyms: ["pagantes", "base pagante"]
+      - name: avg_subscription_ticket
+        type: number
+        sql: "{paid_amount} / NULLIF({paid_charges_count}, 0)"
+        format: currency
+        title: "Ticket médio da assinatura"
+        description: "Valor médio por cobrança paga em R$. ATENÇÃO: é por COBRANÇA, não por rep/mês — o plano anual parcelado gera cobranças de valor menor que a mensal cheia, então abra por plano para ler direito. NÃO-aditivo (razão)."
+        meta:
+          additive: false
+          avoid: "não leia como 'quanto um rep paga por mês' — abra por plano"
+      - name: invoiced_amount
+        sql: invoice_amount
+        type: sum
+        format: currency
+        title: "Valor faturado (NF)"
+        description: "Valor em R$ das notas fiscais AUTORIZADAS — o faturamento fiscal. É recorte FISCAL: difere da assinatura paga porque cobrança sem NF e NF cancelada ficam fora. Grão de NF; aditivo."
+        filters:
+          - sql: "{CUBE}.invoice_status = 'authorized'"
+        meta:
+          granularity: "NF"
+          additive: true
+          avoid: "para receita use paid_amount — NF autorizada é recorte fiscal, não caixa"
+      - name: canceled_invoice_amount
+        sql: invoice_amount
+        type: sum
+        format: currency
+        title: "Valor de NF cancelada"
+        description: "Valor em R$ das notas fiscais CANCELADAS — o documento foi anulado. NÃO é estorno de dinheiro: a cobrança pode seguir paga com a NF cancelada (para dinheiro devolvido use refunded_amount). Grão de NF; aditivo."
+        filters:
+          - sql: "{CUBE}.invoice_status = 'canceled'"
+        meta:
+          granularity: "NF"
+          additive: true
+          avoid: "não leia como perda de receita — para dinheiro devolvido use refunded_amount"
+
+    pre_aggregations:
+      - name: subscription_monthly
+        measures:
+          - paid_amount
+          - overdue_amount
+          - paid_charges_count
+        dimensions:
+          - plan
+        time_dimension: competence_date
+        granularity: month
+        partition_granularity: year
+        refresh_key:
+          every: 1 hour
