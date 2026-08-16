@@ -1,0 +1,285 @@
+# PRIVATE — closed sales (invoiced), grain = ONE ROW PER SALE.
+# This is the CANONICAL source for revenue and for commission in R$: the amount is stored once
+# per sale, so SUM is additive and correct. The installment-grain cube (base_commissions)
+# repeats the amount across installments and MUST NOT be summed for a total — it exists for the
+# margin RATE only (a ratio of two sums at the same grain, where the repetition cancels).
+#
+# Showcases: rolling_window measures, multi-stage time_shift (period over period), custom
+# granularities, and the pre-aggregation rollups that back the standard monthly questions.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_sales
+    sql_table: {{ table('core_sales', 'sales_summary') }}
+    public: false
+    description: "Vendas concluídas (faturadas) de TODOS os produtos, no grão de venda. Fonte canônica de volume vendido, ticket e do TOTAL de comissão em R$."
+
+    joins:
+      - name: base_reps
+        relationship: many_to_one
+        sql: "{CUBE}.rep_id = {base_reps}.rep_id"
+      - name: base_customers
+        relationship: many_to_one
+        sql: "{CUBE}.customer_id = {base_customers}.customer_id"
+      - name: base_products
+        relationship: many_to_one
+        sql: "{CUBE}.product_id = {base_products}.product_id"
+
+    dimensions:
+      - name: sale_id
+        sql: sale_id
+        type: string
+        primary_key: true
+        title: "ID da venda"
+        description: "Identificador único da venda. Chave do grão deste cubo. String."
+      - name: product_line
+        sql: product_line
+        type: string
+        title: "Linha de produto"
+        description: "Linha de produto (Appliances, Furniture, Electronics). Dimensão transversal para abrir qualquer measure por produto; sem este recorte a visão é geral. É também o eixo do filtro de linha (RLS) por domínio."
+        meta:
+          synonyms: ["categoria", "linha", "produto gerencial"]
+          values:
+            Appliances: "eletrodomésticos e linha branca"
+            Furniture: "móveis e mobiliário corporativo"
+            Electronics: "eletrônicos e informática"
+      - name: product_id
+        sql: product_id
+        type: number
+        title: "ID do produto"
+        description: "Identificador do produto vendido. Chave de join ao catálogo products (hierarquia pai/filho). Numérico."
+      - name: rep_id
+        sql: rep_id
+        type: string
+        title: "ID do rep"
+        description: "Representante responsável pela venda. Use para agrupar por rep e cruzar com a view reps. String."
+      - name: customer_id
+        sql: customer_id
+        type: string
+        title: "ID do cliente"
+        description: "Cliente que comprou. Use para agrupar por cliente e cruzar com a view customers. String."
+      - name: channel
+        sql: channel
+        type: string
+        title: "Canal"
+        description: "Canal pelo qual a venda foi fechada. Use para mix de canal."
+        meta:
+          values:
+            Direct: "venda direta do rep"
+            Marketplace: "originada em marketplace"
+            Inbound: "cliente procurou a empresa"
+      - name: is_new_customer
+        sql: is_new_customer
+        type: boolean
+        title: "É cliente novo"
+        description: "TRUE quando é a primeira compra do cliente. Use para separar aquisição de recorrência; é o filtro por trás de new_customer_revenue. Boolean."
+      - name: sale_amount
+        sql: sale_amount
+        type: number
+        title: "Valor da venda (linha)"
+        description: "Valor da venda NA LINHA. Para totais use a measure total_sale_amount. Numérico."
+        meta:
+          avoid: "para totais use total_sale_amount"
+      - name: sold_at
+        sql: "CAST(sold_at AS TIMESTAMP)"
+        type: time
+        title: "Data da venda"
+        description: "Data de competência da venda (faturamento) — o gatilho de comissionamento. Use como timeDimension para séries temporais e janelas de venda. Timestamp."
+        # CUSTOM GRANULARITY — the commercial week runs Sunday..Saturday, not the SQL default
+        # (Monday). Declaring it here means the agent asks for `commercial_week` by name instead
+        # of hand-rolling a DATE_TRUNC offset it would get wrong.
+        granularities:
+          - name: commercial_week
+            title: "Semana comercial (dom–sáb)"
+            interval: 1 week
+            offset: -1 day
+          - name: fiscal_quarter
+            title: "Trimestre fiscal (inicia em fev)"
+            interval: 3 months
+            offset: 1 month
+
+    segments:
+      - name: new_customers
+        sql: "{CUBE}.is_new_customer = TRUE"
+        title: "Vendas de aquisição"
+        description: "Vendas para clientes NOVOS (primeira compra). FICAM FORA as vendas de recorrência. Use o segment para aplicar esse corte a qualquer measure."
+        meta:
+          synonyms: ["aquisição", "cliente novo", "primeira compra"]
+
+    measures:
+      - name: total_sale_amount
+        sql: sale_amount
+        type: sum
+        format: currency
+        title: "Volume de vendas"
+        description: "Volume de vendas em R$: soma do valor das vendas concluídas. Principal indicador de volume comercial. Para COMISSÃO (não venda) use total_commission_amount; para quantidade use sales_count. Grão de venda; aditivo."
+        meta:
+          granularity: "venda"
+          additive: true
+          synonyms: ["valor vendido", "faturamento de vendas", "GMV"]
+          avoid: "para comissão use total_commission_amount; para contagem use sales_count"
+      - name: sales_count
+        sql: sale_id
+        type: count_distinct
+        format: number
+        title: "Qtd. de vendas"
+        description: "Quantidade de vendas concluídas no recorte. Para o valor vendido use total_sale_amount. NÃO-aditivo (count distinct) — recalcule por recorte."
+        meta:
+          granularity: "venda"
+          additive: false
+          synonyms: ["número de vendas", "quantidade de vendas"]
+      - name: avg_ticket
+        type: number
+        sql: "{total_sale_amount} / NULLIF({sales_count}, 0)"
+        format: currency
+        title: "Ticket médio"
+        description: "Ticket médio em R$: volume dividido pela quantidade de vendas. NÃO-aditivo (é uma razão) — não some entre recortes; recalcule."
+        meta:
+          additive: false
+          synonyms: ["valor médio por venda", "ticket"]
+      - name: selling_reps_count
+        sql: rep_id
+        type: count_distinct
+        format: number
+        title: "Reps vendedores"
+        description: "Representantes distintos que venderam no recorte. É a medida de rep PRODUTIVO — não confunda com reps.active_reps_count (status ativo, com ou sem venda). NÃO-aditivo."
+        meta:
+          additive: false
+          synonyms: ["reps vendedores", "vendedores ativos"]
+      - name: buying_customers_count
+        sql: customer_id
+        type: count_distinct
+        format: number
+        title: "Clientes compradores"
+        description: "Clientes distintos que compraram no recorte. Não é a base de clientes: para o cadastro use customers.customers_count, que é muito maior. NÃO-aditivo."
+        meta:
+          additive: false
+          synonyms: ["compradores únicos"]
+      - name: total_commission_amount
+        sql: commission_total_amount
+        type: sum
+        format: currency
+        title: "Comissão total"
+        description: "Comissão total (empresa + rep) em R$, no grão de VENDA. FONTE CANÔNICA do total de comissão — aditivo, soma corretamente entre vendas, produtos e períodos. Para a margem % use commissions.margin_rate (grão parcela). Para VALOR DE VENDA use total_sale_amount."
+        meta:
+          granularity: "venda"
+          additive: true
+          synonyms: ["comissão bruta", "receita de comissão"]
+          avoid: "para margem % use commissions.margin_rate; para valor de venda use total_sale_amount"
+      - name: total_commission_company_amount
+        sql: commission_company_amount
+        type: sum
+        format: currency
+        title: "Comissão empresa"
+        description: "Parte da comissão retida pela empresa em R$, no grão de venda. Aditivo. Use para a receita que fica na casa."
+        meta:
+          granularity: "venda"
+          additive: true
+      - name: total_commission_rep_amount
+        sql: commission_rep_amount
+        type: sum
+        format: currency
+        title: "Comissão do rep"
+        description: "Parte da comissão repassada ao representante em R$, no grão de venda. Aditivo."
+        meta:
+          granularity: "venda"
+          additive: true
+{{ m.filtered_count('new_customer_revenue', "{CUBE}.is_new_customer = TRUE",
+   'Volume de vendas (R$) proveniente de clientes NOVOS. Use para medir aquisição. Grão de venda; aditivo.',
+   'sale_amount', 'sum', 'Receita de aquisição') }}
+
+      # ---- ROLLING WINDOW: trailing 12 months, recalculated per reference month ------------
+      - name: revenue_trailing_12m
+        sql: sale_amount
+        type: sum
+        format: currency
+        title: "Receita 12m móvel"
+        description: "Janela móvel de 12 meses do volume de vendas, recalculável por mês de referência. Requer uma timeDimension (use sold_at). NÃO-aditivo entre meses (janela móvel) — não some os valores mensais. Para janela livre use total_sale_amount com dateRange."
+        rolling_window:
+          trailing: 12 month
+          offset: end
+        meta:
+          additive: false
+          prefer: "para janela livre use total_sale_amount com dateRange"
+          synonyms: ["receita acumulada 12 meses", "LTM"]
+
+      # ---- MULTI-STAGE (Tesseract): period over period, computed in-engine ------------------
+      - name: revenue_prior_period
+        multi_stage: true
+        type: sum
+        format: currency
+        sql: "{CUBE.total_sale_amount}"
+        title: "Receita — período anterior"
+        description: "Volume de vendas do MESMO recorte deslocado em 1 período para trás (time_shift), acompanhando a granularidade da query. Use lado a lado com total_sale_amount numa série temporal para comparar contra o período anterior. Exige timeDimension na query."
+        time_shift:
+          - time_dimension: sold_at
+            interval: 1 month
+            type: prior
+        meta:
+          additive: false
+      - name: revenue_growth_pct
+        multi_stage: true
+        type: number
+        format: percent
+        sql: "100.0 * ({CUBE.total_sale_amount} - {CUBE.revenue_prior_period}) / NULLIF({CUBE.revenue_prior_period}, 0)"
+        title: "Crescimento vs período anterior (%)"
+        description: "Variação percentual da receita contra o período anterior, calculada no motor (multi-stage), não no cliente. Exige timeDimension na query. NÃO-aditivo (razão) — recalcule por recorte."
+        meta:
+          additive: false
+          synonyms: ["crescimento M/M", "variação percentual"]
+      # The denominator of the share below. `group_by` PINS this stage to the product-line grain,
+      # so it ignores whatever else the query groups by (rep, region, month). Without it the
+      # denominator would follow the query's grain and every share would come out as 100%.
+      - name: revenue_of_line
+        multi_stage: true
+        type: sum
+        format: currency
+        sql: "{CUBE.total_sale_amount}"
+        group_by:
+          - product_line
+        title: "Receita da linha (total)"
+        description: "Volume de vendas TOTAL da linha de produto do recorte, ignorando os demais agrupamentos da query. Existe como denominador de revenue_share_of_line; para a receita do recorte em si use total_sale_amount. NÃO-aditivo entre recortes."
+        meta:
+          additive: false
+          avoid: "para a receita do próprio recorte use total_sale_amount"
+      - name: revenue_share_of_line
+        multi_stage: true
+        type: number
+        format: percent
+        sql: "100.0 * {CUBE.total_sale_amount} / NULLIF({CUBE.revenue_of_line}, 0)"
+        title: "Participação na linha (%)"
+        description: "Participação da fatia consultada dentro do total da sua LINHA DE PRODUTO: o numerador segue o recorte da query e o denominador é a linha inteira (multi-stage com group_by). Use para 'quanto esse rep representa dentro da linha'. NÃO-aditivo (razão) — recalcule por recorte, nunca some."
+        meta:
+          additive: false
+          synonyms: ["share", "participação relativa", "representatividade"]
+
+    # ---- PRE-AGGREGATIONS: the declarative cache -------------------------------------------
+    # Cube Store materializes these rollups and the refresh worker keeps them fresh
+    # (see scheduled_refresh_contexts in cube.py). Queries that fit a rollup never touch the
+    # warehouse — marginal cost per question drops to ~zero.
+    # NOTE: count_distinct measures cannot be rolled up exactly; they are deliberately left out
+    # of the rollups below (a query asking for them falls through to the warehouse).
+    pre_aggregations:
+      - name: revenue_by_line_monthly
+        measures:
+          - total_sale_amount
+          - total_commission_amount
+          - total_commission_company_amount
+          - total_commission_rep_amount
+        dimensions:
+          - product_line
+        time_dimension: sold_at
+        granularity: month
+        partition_granularity: year
+        refresh_key:
+          every: 1 hour
+      - name: revenue_by_rep_monthly
+        measures:
+          - total_sale_amount
+          - total_commission_amount
+        dimensions:
+          - rep_id
+        time_dimension: sold_at
+        granularity: month
+        partition_granularity: year
+        refresh_key:
+          every: 1 hour

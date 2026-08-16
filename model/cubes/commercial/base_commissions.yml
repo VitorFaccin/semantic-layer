@@ -1,0 +1,138 @@
+# PRIVATE — commission ledger, grain = COMMISSION x INSTALLMENT (several rows per sale).
+#
+# READ THIS BEFORE ADDING A MEASURE. The commission amount is REPEATED on every installment row
+# of the same sale, so SUM(amount) here OVER-COUNTS the true total. That is why:
+#   - the R$ TOTAL lives in base_sales (one row per sale, additive);
+#   - this cube exists for the MARGIN RATE — a ratio of two sums at the SAME grain, where the
+#     repetition cancels out and the percentage is correct;
+#   - and for settlement/reconciliation state, which only exists at this grain.
+# The macro commission_measures() is deliberately NOT used here (it is sale-grain only).
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_commissions
+    sql_table: {{ table('core_sales', 'commission_ledger') }}
+    public: false
+    description: "Razão de comissões no grão comissão×parcela. Use para MARGEM (%), liquidação e conciliação. O total de comissão em R$ NÃO sai daqui — sai de base_sales."
+
+    joins:
+      - name: base_reps
+        relationship: many_to_one
+        sql: "{CUBE}.rep_id = {base_reps}.rep_id"
+
+    dimensions:
+      - name: commission_id
+        sql: commission_id
+        type: string
+        primary_key: true
+        title: "ID da comissão"
+        description: "Identificador único da linha de comissão (comissão×parcela). Chave do grão. String."
+      - name: sale_id
+        sql: sale_id
+        type: string
+        title: "ID da venda"
+        description: "Venda à qual a comissão pertence. Várias linhas compartilham o mesmo sale_id — é exatamente por isso que somar valor aqui superconta. Use count_distinct para contar vendas."
+        meta:
+          avoid: "não some valores agrupando por sale_id esperando o total da venda"
+      - name: product_line
+        sql: product_line
+        type: string
+        title: "Linha de produto"
+        description: "Linha de produto da venda comissionada. Eixo do filtro de linha (RLS)."
+      - name: rep_id
+        sql: rep_id
+        type: string
+        title: "ID do rep"
+        description: "Representante que recebe a comissão. String."
+      - name: installment
+        sql: installment
+        type: number
+        title: "Parcela"
+        description: "Número da parcela dentro do plano de pagamento da comissão. É o que multiplica as linhas por venda. Numérico."
+      - name: settlement_status
+        sql: settlement_status
+        type: string
+        title: "Status de liquidação"
+        description: "Situação do pagamento da comissão. Use para separar o que já foi pago do que está provisionado."
+        meta:
+          values:
+            settled: "comissão paga ao rep"
+            pending: "provisionada, ainda não paga"
+            canceled: "cancelada (estorno ou venda desfeita)"
+      - name: settled_at
+        sql: "CAST(settled_at AS TIMESTAMP)"
+        type: time
+        title: "Data de liquidação"
+        description: "Data em que a parcela foi paga. NULL enquanto pendente — não é lacuna. Use para regime de caixa."
+        meta:
+          coverage: "NULL enquanto a parcela não foi liquidada"
+      - name: booked_at
+        sql: "CAST(booked_at AS TIMESTAMP)"
+        type: time
+        title: "Data de competência"
+        description: "Data de competência da venda que originou a comissão. Use como timeDimension para alinhar com as séries de base_sales."
+
+    segments:
+      - name: settled
+        sql: "{CUBE}.settlement_status = 'settled'"
+        title: "Liquidadas"
+        description: "Apenas parcelas de comissão já PAGAS ao rep. FICAM FORA pendentes e canceladas. Use para a leitura de caixa, contra a de competência que vive em base_sales."
+      - name: canceled
+        sql: "{CUBE}.settlement_status = 'canceled'"
+        title: "Canceladas"
+        description: "Apenas comissões canceladas (estorno ou venda desfeita). Use para auditar perda."
+
+    measures:
+      - name: commission_base_amount
+        sql: base_amount
+        type: sum
+        format: currency
+        title: "Base de cálculo"
+        description: "Soma da base de cálculo da comissão no grão parcela. Existe para ser o DENOMINADOR da margem — não a reporte como valor de negócio isoladamente."
+        meta:
+          granularity: "comissão×parcela"
+          additive: true
+          avoid: "não use como valor de venda; é denominador de margem"
+      - name: commission_numerator
+        sql: commission_amount
+        type: sum
+        format: currency
+        title: "Numerador da comissão"
+        description: "Soma do valor de comissão no grão parcela. Existe para ser o NUMERADOR da margem. NÃO é o total de comissão da empresa — para isso use sales.total_commission_amount (superconta ~1,7x se somado daqui)."
+        meta:
+          granularity: "comissão×parcela"
+          additive: true
+          avoid: "NUNCA reporte como total de comissão — use sales.total_commission_amount"
+{{ m.ratio_measure('margin_rate', '{commission_numerator}', '{commission_base_amount}',
+   'Margem em %: comissão ÷ base de cálculo, ambos no MESMO grão (comissão×parcela) — por isso a razão é correta mesmo com o valor repetido por parcela. É a métrica canônica de margem. NÃO-aditivo: recalcule por recorte, nunca tire média de percentuais.',
+   'percent', 'Margem (%)') }}
+      - name: settled_amount
+        sql: commission_amount
+        type: sum
+        format: currency
+        title: "Valor liquidado"
+        description: "Comissão já PAGA ao rep, em R$, no grão parcela. Aqui a soma é legítima: cada parcela liquidada é um pagamento distinto. Para a comissão RECONHECIDA (competência) use sales.total_commission_amount."
+        filters:
+          - sql: "{CUBE}.settlement_status = 'settled'"
+        meta:
+          granularity: "comissão×parcela"
+          additive: true
+          synonyms: ["comissão paga", "liquidado"]
+      - name: distinct_sales_count
+        sql: sale_id
+        type: count_distinct
+        format: number
+        title: "Vendas comissionadas"
+        description: "Vendas distintas presentes no razão de comissões. Use count distinct porque cada venda tem várias linhas. NÃO-aditivo."
+        meta:
+          additive: false
+{{ m.filtered_count('canceled_commissions_count', "{CUBE}.settlement_status = 'canceled'",
+   'Linhas de comissão canceladas no recorte. Use para auditar estorno. NÃO-aditivo.',
+   'commission_id', 'count_distinct', 'Comissões canceladas') }}
+      - name: avg_installments_per_sale
+        type: number
+        sql: "COUNT({CUBE}.commission_id) / NULLIF(COUNT(DISTINCT {CUBE}.sale_id), 0)"
+        format: number
+        title: "Parcelas médias por venda"
+        description: "Média de parcelas por venda comissionada — o fator exato pelo qual somar valor neste grão superconta. Existe para tornar a armadilha visível e auditável. NÃO-aditivo."
+        meta:
+          additive: false

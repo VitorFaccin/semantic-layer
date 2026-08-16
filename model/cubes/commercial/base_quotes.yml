@@ -1,0 +1,101 @@
+# PRIVATE — quotes (top of the commercial funnel), grain = one row per quote.
+# A quote is a priced proposal sent to a customer; it may or may not become an order.
+# This is the widest top-of-funnel source: it covers EVERY product line, unlike the
+# chained funnel cube (base_funnel), which only covers the lines that have their own pipeline.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_quotes
+    sql_table: {{ table('core_quotes', 'quotes_base') }}
+    public: false
+    description: "Cotações enviadas a clientes (topo do funil), no grão de cotação. Cobre TODAS as linhas de produto — use para volume de propostas e conversão cotação→pedido."
+
+    joins:
+      - name: base_reps
+        relationship: many_to_one
+        sql: "{CUBE}.rep_id = {base_reps}.rep_id"
+
+    dimensions:
+      - name: quote_id
+        sql: quote_id
+        type: string
+        primary_key: true
+        title: "ID da cotação"
+        description: "Identificador único da cotação. Chave do grão deste cubo. String."
+      - name: product_line
+        sql: product_line
+        type: string
+        title: "Linha de produto"
+        description: "Linha de produto da cotação. Dimensão transversal; é também o eixo do filtro de linha (RLS)."
+      - name: rep_id
+        sql: rep_id
+        type: string
+        title: "ID do rep"
+        description: "Representante que emitiu a cotação. String."
+      - name: customer_id
+        sql: customer_id
+        type: string
+        title: "ID do cliente"
+        description: "Cliente para quem a cotação foi emitida. String."
+      - name: order_id
+        sql: order_id
+        type: string
+        title: "ID do pedido gerado"
+        description: "Pedido originado desta cotação. NULL quando a cotação não converteu — é a semântica de 'não virou pedido', não lacuna. É o critério de converted_quotes."
+        meta:
+          coverage: "NULL quando a cotação não virou pedido"
+      - name: quoted_value
+        sql: quoted_value
+        type: number
+        title: "Valor cotado (linha)"
+        description: "Valor cotado NA LINHA. Para totais use total_quoted_value. Numérico."
+        meta:
+          avoid: "para totais use total_quoted_value"
+      - name: quoted_at
+        sql: "CAST(quoted_at AS TIMESTAMP)"
+        type: time
+        title: "Data da cotação"
+        description: "Data de emissão da cotação. Use como timeDimension para séries de topo de funil. Timestamp."
+
+    segments:
+      - name: converted_quotes
+        sql: "{CUBE}.order_id IS NOT NULL"
+        title: "Cotações convertidas"
+        description: "Cotações que viraram pedido. FICAM FORA as que não converteram. Use com qualquer measure para recortar o topo de funil que avançou."
+        meta:
+          synonyms: ["converteu", "virou pedido"]
+
+    measures:
+      - name: total_quotes
+        sql: quote_id
+        type: count_distinct
+        format: number
+        title: "Qtd. de cotações"
+        description: "Cotações distintas no recorte. Topo do funil, cobrindo todas as linhas de produto. NÃO-aditivo (count distinct) — recalcule por recorte."
+        meta:
+          granularity: "cotação"
+          additive: false
+          synonyms: ["propostas", "orçamentos"]
+{{ m.filtered_count('converted_quotes_count', "{CUBE}.order_id IS NOT NULL",
+   'Cotações que geraram pedido. É o numerador da taxa de conversão de topo de funil. NÃO-aditivo.',
+   'quote_id', 'count_distinct', 'Cotações convertidas') }}
+{{ m.ratio_measure('quote_to_order_rate', '{converted_quotes_count}', '{total_quotes}',
+   'Conversão Cotação → Pedido em %, cobrindo TODAS as linhas de produto. Para a conversão dentro da esteira (só as linhas com pipeline) use funnel.conv_quote_to_order. NÃO-aditivo (razão): recalcule por recorte.',
+   'percent', 'Conv. cotação→pedido') }}
+      - name: total_quoted_value
+        sql: quoted_value
+        type: sum
+        format: currency
+        title: "Valor cotado"
+        description: "Soma do valor cotado (R$) no recorte — o potencial estimado do topo de funil, não receita. Para receita use sales.total_sale_amount. Grão de cotação; aditivo."
+        meta:
+          granularity: "cotação"
+          additive: true
+          avoid: "não é receita — para receita use sales.total_sale_amount"
+      - name: avg_quoted_value
+        type: number
+        sql: "{total_quoted_value} / NULLIF({total_quotes}, 0)"
+        format: currency
+        title: "Valor médio cotado"
+        description: "Valor médio por cotação em R$. NÃO-aditivo (razão) — recalcule por recorte."
+        meta:
+          additive: false
