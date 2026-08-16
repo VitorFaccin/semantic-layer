@@ -1,0 +1,12 @@
+# Normalize line endings. Crucial on Windows: the .sh entrypoint runs INSIDE the
+# Linux container — CRLF breaks the shebang (#!/usr/bin/env bash\r -> "not found").
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.py      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.jinja   text eol=lf
+*.md      text eol=lf
+*.json    text eol=lf
+Dockerfile text eol=lf

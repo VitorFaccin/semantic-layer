@@ -1,0 +1,6 @@
+# Optional Python dependencies for cube.py.
+# The Python config runs on the runtime embedded in the cubejs/cube image.
+# Add here only what cube.py actually imports (e.g. PyJWT for check_auth).
+# Keep it minimal.
+
+# PyJWT==2.9.0

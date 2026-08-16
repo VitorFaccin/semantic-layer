@@ -1,0 +1,47 @@
+# Secrets / credentials — NEVER commit
+.env
+.env.*
+!.env.example
+.gcp/
+*.json.key
+keyfile.json
+service-account*.json
+
+# Cube local
+.cubestore/
+cubestore_data/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Node (cubejs-cli may be installed locally)
+node_modules/
+package-lock.json
+
+# gitleaks
+gitleaks-report.json
+
+# Org-wide Claude conversation exports (777MB, PII-laden) — analysis input only,
+# must NEVER enter git (one file was accidentally staged once; this pins it).
+docs/conversations/
+
+# Local test artifacts
+token.txt
+*.bak-real
+.pytest_cache/
+
+# Generated seed data — regenerate with `python warehouse/seed/generate.py`.
+# The SCHEMA is versioned (warehouse/ddl, warehouse/schema.json): it is an interface and
+# belongs in diffs. The 8 MB of CSV it fills is bulk output, and is not.
+warehouse/seed/data/
+warehouse/*.duckdb
+warehouse/*.duckdb.wal
