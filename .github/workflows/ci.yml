@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the older run: nobody needs the results of a commit
+# that has already been superseded.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast feedback, no Docker: fails in under a minute on the mistakes that are cheapest to catch.
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install lint tooling
+        run: pip install ruff==0.15.20 yamllint==1.35.1 PyYAML==6.0.2 Jinja2==3.1.6
+
+      - name: Ruff (PEP 8, imports, typing, docstrings)
+        run: ruff check .
+
+      - name: Model (Jinja renders, no duplicated YAML keys)
+        # yamllint cannot read model/**: those are Jinja templates. This renders them the way
+        # Cube does and rejects duplicate keys — which PyYAML accepts and Cube refuses at boot.
+        run: python scripts/lint_model.py
+
+      - name: YAML (compose file, workflows)
+        run: yamllint -c .yamllint.yml .
+
+      - name: Line endings are LF
+        # A CRLF .sh breaks the container entrypoint with `env: 'bash\r'`, a message that names
+        # neither the file nor the cause. Cheaper to assert here than to debug there.
+        run: |
+          if git ls-files --eol | grep -E 'w/crlf|w/mixed'; then
+            echo "::error::CRLF found in the working tree — see .gitattributes"
+            exit 1
+          fi
+          echo "all LF"
+
+  # The real thing: build the warehouse, boot Cube against it, run every tier.
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          pip install -r tests/requirements.txt
+          pip install -r mcp_gateway/requirements.txt
+
+      - name: Write .env
+        # The suite mints one JWT per RBAC persona and must sign them with the SAME secret the
+        # container booted with; tests/conftest.py reads this file, so both sides agree.
+        run: |
+          cp .env.example .env
+          SECRET="ci-$(openssl rand -hex 16)"
+          sed -i "s|^CUBEJS_API_SECRET=.*|CUBEJS_API_SECRET=${SECRET}|" .env
+          sed -i "s|^AGENT_JWT_SECRET=.*|AGENT_JWT_SECRET=${SECRET}|" .env
+
+      - name: Build the warehouse and boot Cube
+        # The `seed` service derives the schema from the model, generates the data and
+        # materialises DuckDB; compose holds `cube` back until it exits successfully.
+        run: docker compose up -d --build
+
+      - name: Wait for the API
+        run: |
+          url=http://localhost:4000/readyz
+          for i in $(seq 1 90); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' $url)" = "200" ]; then
+              echo "ready after ${i} attempt(s)"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Cube did not become ready"
+          docker compose logs cube
+          exit 1
+
+      - name: Wait for the pre-aggregations to build
+        # A query matching a rollup FAILS until the refresh worker has materialised it, so the
+        # suite would be flaky without this — the failure is real, just not yet true.
+        run: |
+          for i in $(seq 1 40); do
+            body=$(curl -s -G http://localhost:4000/cubejs-api/v1/load \
+              --data-urlencode 'query={"measures":["sales.total_commission_amount"]}')
+            case "$body" in
+              *"pre-aggregation"*) sleep 5 ;;
+              *) echo "rollups ready after ${i} attempt(s)"; exit 0 ;;
+            esac
+          done
+          echo "::error::pre-aggregations were never built — is CUBEJS_REFRESH_WORKER set?"
+          docker compose logs cube
+          exit 1
+
+      - name: Semantic layer suite
+        run: pytest tests -q
+
+      - name: MCP gateway suite
+        working-directory: mcp_gateway
+        run: pytest tests -q
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose logs --tail=200
