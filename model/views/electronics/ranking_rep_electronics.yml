@@ -1,0 +1,38 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — Eletrônicos rep production ranking. DOMAIN-GATED (inline group, see macros.jinja).
+views:
+  - name: ranking_rep_electronics
+    description: "Ranking de produção dos representantes em Eletrônicos, no grão rep×mês de referência. Use para posição, quartil e score de PRODUÇÃO. Para o score de PERFIL (admissão) use reps.rep_score — são coisas diferentes."
+    meta:
+      ai_context: >
+        LEITURA: ranking recalculado por mês de referência, sobre uma janela móvel de 9 meses.
+        Por isso as janelas se sobrepõem entre meses: NÃO some produção entre meses de
+        referência.
+
+        DESAMBIGUAÇÃO: "score do rep" tem duas leituras que não se equivalem — PRODUÇÃO (aqui) e
+        PERFIL de admissão (reps.rep_score). Pergunte qual o usuário quer.
+    access_policy:
+      - group: d_electronics_10
+        member_level:
+          includes: "*"
+    cubes:
+      - join_path: base_ranking_rep_electronics
+        includes: "*"
+{{ m.rep_attribute_block("base_ranking_rep_electronics.base_reps") }}
+
+    folders:
+      - name: "Medidas"
+        includes:
+          - production_score
+          - ranked_reps_count
+          - total_production_amount
+      - name: "Recortes"
+        includes:
+          - rep_id
+          - rank_position
+          - quartile
+          - base_reps_region
+          - base_reps_territory
+      - name: "Tempo"
+        includes:
+          - reference_month

@@ -1,0 +1,74 @@
+# PRIVATE — lead status-change log, grain = ONE TRANSITION.
+# Thin by design: keys + the change only. Every business attribute travels through the
+# many_to_one join to base_leads, so there is ONE definition of "channel" or "score", not two.
+# Same discipline as base_rep_events.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_lead_events
+    sql_table: {{ table('core_rep', 'lead_status_changes') }}
+    public: false
+    description: "Log de mudanças de etapa dos leads de recrutamento, no grão da transição. Use para JORNADA; para o estado atual use base_leads."
+
+    joins:
+      - name: base_leads
+        relationship: many_to_one
+        sql: "{CUBE}.lead_id = {base_leads}.lead_id"
+
+    dimensions:
+      - name: change_id
+        sql: change_id
+        type: string
+        primary_key: true
+        title: "ID da mudança"
+        description: "Identificador único da transição. Chave do grão. String."
+      - name: lead_id
+        sql: lead_id
+        type: string
+        title: "ID do lead"
+        description: "Lead que mudou de etapa. Chave de join para os atributos do lead. String."
+      - name: from_status
+        sql: from_status
+        type: string
+        title: "Etapa anterior"
+        description: "Etapa de onde o lead saiu. NULL na primeira transição (criação). String."
+        meta:
+          coverage: "NULL na transição de criação"
+      - name: to_status
+        sql: to_status
+        type: string
+        title: "Etapa nova"
+        description: "Etapa para onde o lead foi. Use para contar quantos ALCANÇARAM uma etapa. String."
+      - name: changed_at
+        sql: "CAST(changed_at AS TIMESTAMP)"
+        type: time
+        title: "Data da mudança"
+        description: "Quando a transição ocorreu. É o eixo correto para 'reativações em 2026' — diferente da data de criação do lead."
+
+    segments:
+      - name: reactivations
+        sql: "{CUBE}.from_status = 'Rejected'"
+        title: "Reativações"
+        description: "Transições que SAEM de 'Rejected' — o lead recusado que voltou ao funil. FICAM FORA as demais transições."
+        meta:
+          synonyms: ["voltou ao funil", "recuperação de recusado"]
+
+    measures:
+      - name: transitions_count
+        sql: change_id
+        type: count_distinct
+        format: number
+        title: "Qtd. de transições"
+        description: "Transições distintas no recorte. Um mesmo lead pode aparecer várias vezes — para contar leads use moved_leads_count. NÃO-aditivo."
+        meta:
+          additive: false
+      - name: moved_leads_count
+        sql: lead_id
+        type: count_distinct
+        format: number
+        title: "Leads que se moveram"
+        description: "Leads distintos com alguma transição no recorte. NÃO-aditivo — não some entre períodos."
+        meta:
+          additive: false
+{{ m.filtered_count('reactivations_count', "{CUBE}.from_status = 'Rejected'",
+   'Leads distintos que saíram de recusado e voltaram ao funil no recorte. NÃO-aditivo.',
+   'lead_id', 'count_distinct', 'Reativações') }}

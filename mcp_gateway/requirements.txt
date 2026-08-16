@@ -1,0 +1,9 @@
+# MCP Gateway deps. fastmcp governs its transitive deps (mcp/pydantic/httpx), so we pin fastmcp
+# exactly and give pydantic/httpx compatible floors instead of hard pins (fastmcp 2.11.3 requires
+# pydantic>=2.11.7). Bump together if you change fastmcp.
+fastmcp==2.11.3
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+httpx>=0.27,<0.29
+pydantic>=2.11.7,<3
+PyJWT==2.10.1

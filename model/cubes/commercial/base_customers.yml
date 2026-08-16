@@ -1,0 +1,77 @@
+# PRIVATE — customer registry, grain = one row per customer.
+# Source of truth for customer EXISTENCE. "Active" here is a REGISTRY flag, not a behavioural
+# one: an active customer may never have bought. For buyers use sales.buying_customers_count,
+# which is an order of magnitude smaller.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_customers
+    sql_table: {{ table('core_customer', 'customer_overview') }}
+    public: false
+    description: "Clientes finais, no grão de cliente. Cadastro e segmentação. Fonte de verdade de EXISTÊNCIA de cliente."
+
+    dimensions:
+      - name: customer_id
+        sql: customer_id
+        type: string
+        primary_key: true
+        title: "ID do cliente"
+        description: "Identificador único do cliente. Chave do grão e de join a partir dos fatos. String."
+      - name: company_name
+        sql: company_name
+        type: string
+        title: "Razão social"
+        description: "Nome/razão social do cliente. PII moderada: use para identificação, nunca para agregação. String."
+      - name: segment
+        sql: segment
+        type: string
+        title: "Segmento"
+        description: "Segmento comercial do cliente. Use para recortes de porte."
+        meta:
+          values:
+            Enterprise: "grandes contas"
+            MidMarket: "médio porte"
+            SMB: "pequenos negócios"
+      - name: industry
+        sql: industry
+        type: string
+        title: "Setor"
+        description: "Setor de atuação do cliente. Use para análise de concentração setorial. String."
+      - name: state
+        sql: state
+        type: string
+        title: "UF"
+        description: "Unidade federativa do cliente. Use para distribuição geográfica da carteira. String."
+      - name: is_active
+        sql: is_active
+        type: boolean
+        title: "Ativo (cadastro)"
+        description: "TRUE quando o cadastro está ativo. É situação CADASTRAL, não comportamento: cliente ativo pode nunca ter comprado. Para quem comprou use sales.buying_customers_count."
+        meta:
+          avoid: "não use como proxy de comprador — para isso use sales.buying_customers_count"
+      - name: created_at
+        sql: "CAST(created_at AS TIMESTAMP)"
+        type: time
+        title: "Data de cadastro"
+        description: "Data de criação do cadastro. Use como timeDimension para séries de aquisição de cadastro."
+
+    segments:
+      - name: active_customers
+        sql: "{CUBE}.is_active = TRUE"
+        title: "Clientes ativos (cadastro)"
+        description: "Clientes com cadastro ativo. ATENÇÃO: é status cadastral, não compra. FICAM FORA os cadastros inativos."
+        meta:
+          avoid: "não confunda com cliente que comprou"
+
+    measures:
+      - name: customers_count
+        sql: customer_id
+        type: count_distinct
+        format: number
+        title: "Qtd. de clientes"
+        description: "Clientes distintos no cadastro. Muito maior que a base de compradores. NÃO-aditivo."
+        meta:
+          granularity: "cliente"
+          additive: false
+{{ m.filtered_count('active_customers_count', "{CUBE}.is_active = TRUE",
+   'Clientes com cadastro ATIVO. É status cadastral, não comprador. NÃO-aditivo.',
+   'customer_id', 'count_distinct', 'Clientes ativos') }}

@@ -1,0 +1,52 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — rep ramp-up (daily snapshot).
+views:
+  - name: growth
+    description: "Rampa e ativação dos representantes, no grão de rep (foto diária do estado atual): quem atingiu a meta de rampa e em quantos dias, quem já originou, canal de aquisição e contagens de vida. Traz atributos do rep para recorte por safra e região. Para séries mensais de produção use sales e orders."
+    meta:
+      ai_context: >
+        LEITURA: uma linha por rep com o estado ATUAL — não há histórico de estado. As DATAS de
+        evento (first_order_at, reached_target_at) são fatos históricos e respondem série com
+        dateRange; o que NÃO é respondível é evolução de atributo (como o ramp_group mudou).
+
+        ZERO SE ESCREVE COMO NULL nas contagens de vida (lifetime_orders, lifetime_sales): o
+        valor 0 NÃO existe nessas colunas. Portanto "reps que nunca venderam" é
+        lifetime_sales notSet — filtrar `= 0` devolve zero linhas SEM erro, e ler isso como
+        "não existe ninguém nessa situação" é o engano mais fácil desta view.
+
+        DESAMBIGUAÇÃO: ramp_group é PERFIL de entrada, não produção — para produção use as views
+        ranking_rep_*.
+{{ m.access_policy_transversal() }}
+    cubes:
+      - join_path: base_growth
+        includes: "*"
+{{ m.rep_attribute_block("base_growth.base_reps") }}
+
+    folders:
+      - name: "Medidas"
+        includes:
+          - reps_count
+          - reached_target_count
+          - activated_reps_count
+          - target_rate
+          - avg_days_to_target
+      - name: "Recortes — rampa"
+        includes:
+          - rep_id
+          - ramp_group
+          - acquisition_channel
+          - lifetime_orders
+          - lifetime_sales
+          - days_to_target
+      - name: "Recortes — rede"
+        includes:
+          - base_reps_cohort
+          - base_reps_region
+          - base_reps_territory
+          - base_reps_tier
+      - name: "Tempo"
+        includes:
+          - first_order_at
+          - first_sale_at
+          - reached_target_at
+          - last_order_at

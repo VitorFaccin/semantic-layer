@@ -1,0 +1,42 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — product catalog. The EXISTENCE source: absence from a metric is never proof of absence.
+views:
+  - name: products
+    description: "Catálogo de produtos, no grão de produto, com a hierarquia pai/variante. Use para saber o que EXISTE no catálogo, contar produtos e agrupar vendas/pedidos pelo produto raiz. Fonte de verdade de existência de produto."
+    meta:
+      ai_context: >
+        LEITURA: catálogo é EXISTÊNCIA, não desempenho. Um produto sem venda no período continua
+        existindo aqui — é exatamente por isso que esta view é a fonte para confirmar existência
+        antes de dizer que algo "não existe".
+
+        NUNCA: concluir que um produto não existe porque ele não apareceu em sales ou orders;
+        confirme aqui primeiro.
+{{ m.access_policy_transversal() }}
+    cubes:
+      - join_path: base_products
+        includes: "*"
+
+    folders:
+      - name: "Medidas"
+        includes:
+          - products_count
+          - parent_products_count
+          - child_products_count
+          - avg_list_price
+      - name: "Identificação"
+        includes:
+          - product_id
+          - product_name
+          - supplier_id
+      - name: "Hierarquia"
+        includes:
+          - parent_product_id
+          - is_parent_product
+          - product_level
+          - root_product_id
+      - name: "Classificação"
+        includes:
+          - product_line
+          - category
+          - is_active
+          - list_price

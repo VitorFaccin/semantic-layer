@@ -1,0 +1,126 @@
+# PRIVATE — rep-recruitment leads, grain = one row per lead (CURRENT state).
+# LEAD HERE = a CANDIDATE to become a sales rep, not a sales lead for a customer deal.
+# Customer deals live in the vertical pipelines (operational_*). Never mix the two funnels.
+# This cube holds the CURRENT state; the journey (each transition) is base_lead_events.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_leads
+    sql_table: {{ table('core_rep', 'recruitment_leads') }}
+    public: false
+    description: "Leads de RECRUTAMENTO de representantes, no grão de lead (estado atual). Não confundir com negócio de cliente, que vive nas esteiras de produto."
+
+    dimensions:
+      - name: lead_id
+        sql: lead_id
+        type: string
+        primary_key: true
+        title: "ID do lead"
+        description: "Identificador único do candidato. Chave do grão. String."
+      - name: status
+        sql: status
+        type: string
+        title: "Etapa atual"
+        description: "Etapa ATUAL do lead no funil de recrutamento. É foto do estado de hoje, não a jornada. Para etapas atingidas use a view lead_funnel."
+        meta:
+          ai_context: >
+            LEITURA: estado atual. A foto subestima as etapas intermediárias, porque cada lead
+            aparece só onde está agora — um convertido já não figura em 'Contacted', embora tenha
+            passado por lá. Para "quantos passaram por qualificação", use o log de transições.
+          values:
+            New: "recém-criado, sem contato"
+            Contacted: "primeiro contato feito"
+            Qualified: "qualificado, em avaliação"
+            Converted: "virou representante"
+            Rejected: "recusado"
+      - name: channel
+        sql: channel
+        type: string
+        title: "Canal de aquisição"
+        description: "Canal por onde o candidato chegou. Use para medir eficiência de canal de recrutamento. String."
+      - name: rejection_reason
+        sql: rejection_reason
+        type: string
+        title: "Motivo da recusa"
+        description: "Motivo registrado na recusa. NULL quando o lead não foi recusado — não é lacuna. Use com o segment rejected_leads para tabular motivos."
+        meta:
+          coverage: "preenchido apenas em leads recusados"
+      - name: rep_id
+        sql: rep_id
+        type: string
+        title: "ID do rep gerado"
+        description: "Representante criado a partir deste lead. NULL quando não converteu. É a ponte com a view reps."
+        meta:
+          coverage: "NULL quando o lead não converteu"
+      - name: lead_score
+        sql: lead_score
+        type: number
+        title: "Score do lead"
+        description: "Score de qualificação do candidato na entrada. Numérico."
+        meta:
+          coverage: "NULL em leads anteriores ao scoring"
+      - name: created_at
+        sql: "CAST(created_at AS TIMESTAMP)"
+        type: time
+        title: "Data de criação"
+        description: "Data de entrada do lead no funil. Use como timeDimension para coortes de captação."
+      - name: converted_at
+        sql: "CAST(converted_at AS TIMESTAMP)"
+        type: time
+        title: "Data de conversão"
+        description: "Data em que o lead virou representante. NULL quando não converteu."
+        meta:
+          coverage: "NULL quando não converteu"
+
+    segments:
+      - name: converted_leads
+        sql: "{CUBE}.status = 'Converted'"
+        title: "Leads convertidos"
+        description: "Apenas leads que viraram representante. FICAM FORA os demais estados."
+      - name: rejected_leads
+        sql: "{CUBE}.status = 'Rejected'"
+        title: "Leads recusados"
+        description: "Apenas leads recusados. É o recorte para tabular rejection_reason."
+      - name: in_progress_leads
+        sql: "{CUBE}.status IN ('New', 'Contacted', 'Qualified')"
+        title: "Funil vivo"
+        description: "Leads ainda em andamento (do cadastro à qualificação). FICAM FORA convertidos e recusados. É o estoque acionável do funil."
+        meta:
+          synonyms: ["em aberto", "pipeline de recrutamento"]
+
+    measures:
+      - name: leads_count
+        sql: lead_id
+        type: count_distinct
+        format: number
+        title: "Qtd. de leads"
+        description: "Leads distintos no recorte. NÃO-aditivo."
+        meta:
+          granularity: "lead"
+          additive: false
+      - name: avg_lead_score
+        sql: lead_score
+        type: avg
+        format: number
+        title: "Score médio do lead"
+        description: "Média do score de qualificação. Considera apenas leads COM score — os sem score ficam fora, não entram como zero. NÃO-aditivo."
+        meta:
+          additive: false
+          coverage: "média apenas sobre leads com score"
+      - name: avg_days_to_conversion
+        sql: "date_diff('day', created_at, converted_at)"
+        type: avg
+        format: number
+        title: "Dias até converter"
+        description: "Média de dias entre a criação do lead e a conversão. Considera apenas os convertidos. NÃO-aditivo."
+        meta:
+          additive: false
+          coverage: "apenas leads convertidos"
+{{ m.filtered_count('converted_leads_count', "{CUBE}.status = 'Converted'",
+   'Leads que viraram representante. Numerador da taxa de conversão de recrutamento. NÃO-aditivo.',
+   'lead_id', 'count_distinct', 'Leads convertidos') }}
+{{ m.filtered_count('rejected_leads_count', "{CUBE}.status = 'Rejected'",
+   'Leads recusados no recorte. NÃO-aditivo.',
+   'lead_id', 'count_distinct', 'Leads recusados') }}
+{{ m.ratio_measure('conversion_rate', '{converted_leads_count}', '{leads_count}',
+   'Conversão de lead para representante em %. ATENÇÃO: num recorte por data de criação a coorte pode estar ABERTA (leads recentes ainda no funil), o que puxa a taxa para baixo — não leia como queda sem checar a maturidade da coorte. NÃO-aditivo.',
+   'percent', 'Conversão de recrutamento') }}

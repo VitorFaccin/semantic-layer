@@ -1,0 +1,22 @@
+# PRIVATE — Appliances deal pipeline. EXTENDS base_deal_pipeline: every shared member
+# (deal_id, status, stages, won/lost/open measures, win rate, avg days to close) is inherited,
+# so the three product lines stay symmetric by construction. Only what is specific to
+# Appliances is declared here.
+cubes:
+  - name: base_operational_appliances
+    extends: base_deal_pipeline
+    sql_table: {{ table('mart_appliances', 'deal_pipeline') }}
+    public: false
+    description: "Esteira de negócios de Eletrodomésticos, no grão de negócio. Herda o esqueleto comum de pipeline e acrescenta o que é específico da linha."
+
+    dimensions:
+      - name: installation_required
+        sql: installation_required
+        type: boolean
+        title: "Exige instalação"
+        description: "TRUE quando o negócio inclui instalação no cliente — específico de eletrodomésticos, pois afeta prazo e custo de entrega. Boolean."
+      - name: warranty_months
+        sql: warranty_months
+        type: number
+        title: "Garantia (meses)"
+        description: "Meses de garantia estendida negociados. Numérico."

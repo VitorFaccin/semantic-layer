@@ -1,0 +1,123 @@
+# PRIVATE — product catalog, grain = one row per product (parent AND child variants).
+# Source of truth for product EXISTENCE. A product missing from sales means "no sales recorded",
+# NEVER "does not exist" — that distinction is what stops the agent from denying a real product.
+# Parent/child: a child is a variant (size, voltage, finish) of a parent product.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_products
+    sql_table: {{ table('core_product', 'product_overview') }}
+    public: false
+    description: "Catálogo de produtos, no grão de produto, com a hierarquia pai/filho. Fonte de verdade de EXISTÊNCIA de produto."
+
+    dimensions:
+      - name: product_id
+        sql: product_id
+        type: number
+        primary_key: true
+        title: "ID do produto"
+        description: "Identificador único do produto. Chave do grão e de join a partir dos fatos. Numérico."
+      - name: product_name
+        sql: product_name
+        type: string
+        title: "Nome do produto"
+        description: "Nome comercial do produto. Use para detalhar no nível de produto específico. String."
+      - name: product_line
+        sql: product_line
+        type: string
+        title: "Linha de produto"
+        description: "Linha de produto (Appliances, Furniture, Electronics). Eixo do filtro de linha (RLS)."
+      - name: category
+        sql: category
+        type: string
+        title: "Categoria de cadastro"
+        description: "Categoria de cadastro do produto dentro da linha. Use para agrupamentos de catálogo; para a visão de negócio prefira product_line."
+      - name: supplier_id
+        sql: supplier_id
+        type: string
+        title: "ID do fornecedor"
+        description: "Fornecedor do produto. Chave de join às views de fornecedor. String."
+      - name: parent_product_id
+        sql: parent_product_id
+        type: number
+        title: "Produto pai"
+        description: "Identificador do produto PAI; nulo quando o próprio produto é o pai. É o critério de is_parent_product."
+        meta:
+          coverage: "NULL quando o produto já é o pai — é semântica, não lacuna"
+      - name: is_parent_product
+        sql: "({CUBE}.parent_product_id IS NULL)"
+        type: boolean
+        title: "É produto pai"
+        description: "TRUE quando o produto é PAI/raiz (sem pai acima). Use para filtrar/contar produtos pai vs variantes. Boolean."
+      - name: product_level
+        sql: "CASE WHEN {CUBE}.parent_product_id IS NULL THEN 'Pai' ELSE 'Variante' END"
+        type: string
+        title: "Nível do produto"
+        description: "Nível na hierarquia: 'Pai' (raiz) ou 'Variante' (filho, com pai acima). Use para abrir/segmentar por nível."
+        meta:
+          values:
+            Pai: "produto raiz do catálogo"
+            Variante: "variação (tamanho, voltagem, acabamento) de um pai"
+      - name: root_product_id
+        sql: "COALESCE({CUBE}.parent_product_id, {CUBE}.product_id)"
+        type: number
+        title: "ID do produto raiz"
+        description: "Produto RAIZ (rollup): para variantes = o id do pai; para pais = o próprio id. Use para AGRUPAR vendas/pedidos por produto pai consolidando as variantes. Numérico."
+        meta:
+          synonyms: ["produto pai consolidado", "agrupar por produto pai"]
+      - name: is_active
+        sql: is_active
+        type: boolean
+        title: "Ativo no catálogo"
+        description: "TRUE quando o produto está ativo para venda. Produto inativo permanece no catálogo (histórico de vendas depende dele). Boolean."
+      - name: list_price
+        sql: list_price
+        type: number
+        title: "Preço de tabela"
+        description: "Preço de tabela do produto em R$, como atributo. Para preço médio praticado use as views de venda. Numérico."
+
+    hierarchies:
+      - name: catalog
+        title: "Hierarquia do catálogo"
+        levels:
+          - product_line
+          - category
+          - product_name
+
+    segments:
+      - name: parent_products
+        sql: "{CUBE}.parent_product_id IS NULL"
+        title: "Produtos pai"
+        description: "Apenas produtos PAI (raiz do catálogo). FICAM FORA as variantes. Use para contar o catálogo sem inflar com variações."
+      - name: child_products
+        sql: "{CUBE}.parent_product_id IS NOT NULL"
+        title: "Variantes"
+        description: "Apenas VARIANTES (produtos com pai). Complemento exato de parent_products."
+      - name: active_products
+        sql: "{CUBE}.is_active = TRUE"
+        title: "Produtos ativos"
+        description: "Apenas produtos ativos para venda. FICAM FORA os descontinuados, que permanecem no catálogo por causa do histórico."
+
+    measures:
+      - name: products_count
+        sql: product_id
+        type: count_distinct
+        format: number
+        title: "Qtd. de produtos"
+        description: "Produtos distintos no recorte (pais e variantes). Para só os pais use parent_products_count. NÃO-aditivo."
+        meta:
+          granularity: "produto"
+          additive: false
+{{ m.filtered_count('parent_products_count', "{CUBE}.parent_product_id IS NULL",
+   'Produtos PAI distintos (raiz do catálogo). Use para o tamanho real do catálogo, sem inflar com variantes. NÃO-aditivo.',
+   'product_id', 'count_distinct', 'Produtos pai') }}
+{{ m.filtered_count('child_products_count', "{CUBE}.parent_product_id IS NOT NULL",
+   'Variantes distintas (produtos com pai). Use para medir profundidade de catálogo. NÃO-aditivo.',
+   'product_id', 'count_distinct', 'Variantes') }}
+      - name: avg_list_price
+        sql: list_price
+        type: avg
+        format: currency
+        title: "Preço de tabela médio"
+        description: "Média do preço de tabela no recorte. NÃO-aditivo (média) — recalcule por recorte."
+        meta:
+          additive: false

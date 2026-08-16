@@ -1,0 +1,22 @@
+# PRIVATE — Furniture deal pipeline. EXTENDS base_deal_pipeline: every shared member
+# (deal_id, status, stages, won/lost/open measures, win rate, avg days to close) is inherited,
+# so the three product lines stay symmetric by construction. Only what is specific to
+# Furniture is declared here.
+cubes:
+  - name: base_operational_furniture
+    extends: base_deal_pipeline
+    sql_table: {{ table('mart_furniture', 'deal_pipeline') }}
+    public: false
+    description: "Esteira de negócios de Móveis, no grão de negócio. Herda o esqueleto comum de pipeline e acrescenta o que é específico da linha."
+
+    dimensions:
+      - name: is_custom_order
+        sql: is_custom_order
+        type: boolean
+        title: "Sob medida"
+        description: "TRUE quando o móvel é sob medida — específico de móveis, pois muda radicalmente o prazo de produção. Boolean."
+      - name: lead_time_days
+        sql: lead_time_days
+        type: number
+        title: "Prazo de produção (dias)"
+        description: "Prazo de produção acordado, em dias. Numérico."

@@ -1,0 +1,38 @@
+# Runs the same checks as the CI `lint` job, before the commit exists.
+#   pip install pre-commit && pre-commit install
+#   pre-commit run --all-files
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=512]        # the seed and the .duckdb are generated; never commit them
+      - id: mixed-line-ending
+        # CRLF in a .sh breaks the container entrypoint with `env: 'bash\r'`.
+        args: [--fix=lf]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: [-c, .yamllint.yml]
+
+  - repo: local
+    hooks:
+      - id: lint-model
+        name: Cube model (Jinja + duplicated YAML keys)
+        # Not yamllint: model/** are Jinja templates, and the failure that matters is a duplicate
+        # key, which PyYAML accepts and Cube rejects at boot.
+        entry: python scripts/lint_model.py
+        language: system
+        files: ^model/.*\.(yml|jinja)$
+        pass_filenames: false

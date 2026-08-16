@@ -1,0 +1,69 @@
+# PRIVATE — portal engagement, grain = rep x month.
+# The SERIES counterpart to reps.last_portal_login, which is a single stamp and cannot answer
+# "how many reps used the portal in July". Anything month-over-month comes from here.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_rep_logins
+    sql_table: {{ table('core_rep', 'portal_logins_monthly') }}
+    public: false
+    description: "Engajamento dos representantes no portal, no grão rep×mês: logins no mês, dias ativos e primeiro/último acesso."
+
+    joins:
+      - name: base_reps
+        relationship: many_to_one
+        sql: "{CUBE}.rep_id = {base_reps}.rep_id"
+
+    dimensions:
+      - name: id
+        sql: "CONCAT({CUBE}.rep_id, '-', {CUBE}.reference_month)"
+        type: string
+        primary_key: true
+        title: "ID da linha"
+        description: "Chave técnica do grão (rep + mês). Para agrupar use rep_id. String."
+      - name: rep_id
+        sql: rep_id
+        type: string
+        title: "ID do rep"
+        description: "Representante da linha. String."
+      - name: reference_month
+        sql: "CAST(reference_month AS TIMESTAMP)"
+        type: time
+        title: "Mês de referência"
+        description: "Mês da apuração de engajamento. Use como timeDimension — é o eixo da série mensal."
+      - name: logins_in_month
+        sql: logins_in_month
+        type: number
+        title: "Logins no mês"
+        description: "Quantidade de logins do rep naquele mês, como atributo de linha. Para o total use total_logins. Numérico."
+      - name: active_days
+        sql: active_days
+        type: number
+        title: "Dias ativos"
+        description: "Dias distintos com pelo menos um acesso no mês. Numérico."
+
+    measures:
+      - name: total_logins
+        sql: logins_in_month
+        type: sum
+        format: number
+        title: "Total de logins"
+        description: "Soma dos logins no recorte. Aditivo entre meses e reps."
+        meta:
+          additive: true
+      - name: logged_reps_count
+        sql: rep_id
+        type: count_distinct
+        format: number
+        title: "Reps que acessaram"
+        description: "Representantes distintos com pelo menos um login no recorte. Com granularidade mensal é o MAU do portal. NÃO-aditivo entre meses — o mesmo rep repete; recalcule por janela."
+        meta:
+          additive: false
+          synonyms: ["MAU", "usuários ativos"]
+      - name: avg_active_days
+        sql: active_days
+        type: avg
+        format: number
+        title: "Dias ativos (média)"
+        description: "Média de dias ativos por rep no recorte. NÃO-aditivo (média) — recalcule por recorte."
+        meta:
+          additive: false

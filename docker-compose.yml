@@ -1,0 +1,68 @@
+# ======================================================================
+# LOCAL-FIRST: a fresh clone runs with `docker compose up --build`.
+# No cloud project, no credentials — the `seed` service builds a local
+# DuckDB warehouse first, then the all-in-one Cube service starts.
+#
+# Playground at http://localhost:4000
+# ======================================================================
+services:
+  # Builds warehouse/meridian.duckdb from the model-derived schema + the deterministic seed.
+  # Runs to completion BEFORE cube starts, and exits. On a rebuilt clone it is the only step
+  # that takes real time; afterwards it detects the existing file and returns immediately.
+  seed:
+    build:
+      context: ./warehouse
+      dockerfile: Dockerfile
+    volumes:
+      - .:/repo                       # generated files land back on the host, not in a volume
+
+  cube:
+    build:
+      context: .
+      dockerfile: Dockerfile          # all-in-one image (cubestored + API)
+    ports:
+      - "4000:4000"                   # REST/GraphQL + Playground
+      - "15432:15432"                 # SQL API (Postgres protocol)
+    env_file: .env
+    environment:
+      - CUBEJS_DEV_MODE=false         # dev mode IGNORES access policies — keep it off
+      # Cube Store is embedded in the container -> always localhost.
+      - CUBEJS_CUBESTORE_HOST=127.0.0.1
+      - CUBEJS_CUBESTORE_PORT=3030
+      # Local warehouse: the DuckDB file the seed service just built.
+      - CUBEJS_DB_TYPE=duckdb
+      - CUBEJS_DB_DUCKDB_DATABASE_PATH=/cube/warehouse/meridian.duckdb
+    volumes:
+      # cube.py, rbac.py and model/ mounted to iterate without rebuilding
+      # (they are baked into the image too).
+      - ./cube.py:/cube/conf/cube.py
+      - ./rbac.py:/cube/conf/rbac.py
+      - ./model:/cube/conf/model
+      # Mounted as a DIRECTORY on purpose: bind-mounting the .duckdb file directly would make
+      # Docker create an empty directory in its place whenever the file does not exist yet.
+      - ./warehouse:/cube/warehouse
+      # Embedded Cube Store cache persisted in a local volume.
+      - cubestore_data:/cube/data
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+
+  # MCP gateway (FastAPI + FastMCP) — SEPARATE service, mirrors a production sidecar.
+  # Talks to Cube over the compose network at http://cube:4000.
+  mcp:
+    build:
+      context: ./mcp_gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"                   # MCP over Streamable HTTP at /mcp + /health
+    environment:
+      - CUBE_URL=http://cube:4000
+      - CUBE_API_SECRET=${CUBEJS_API_SECRET}   # secret to MINT the Cube JWT (from .env)
+      # Secret to VALIDATE the agent's JWT. Defaults to CUBE_API_SECRET if unset (single
+      # token works locally). When set, /mcp requires a valid agent JWT.
+      - AGENT_JWT_SECRET=${AGENT_JWT_SECRET:-}
+    depends_on:
+      - cube
+
+volumes:
+  cubestore_data:

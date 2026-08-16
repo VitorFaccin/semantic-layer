@@ -1,0 +1,62 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — the rep registry. PII lives ONLY here, gated once by this view's level-40 floor.
+views:
+  - name: reps
+    description: "Representantes comerciais (rede de vendas), no grão de rep. Use para contar a rede (reps_count) e os ativos (active_reps_count), para descrever reps por tier, região, território, gerente de conta e plano, e para o PERFIL do rep (rep_score, canal de origem, contatos e datas de ciclo de vida). Para vendas/comissões/pedidos do rep use as views sales, commissions ou orders (que já trazem atributos do rep para recorte); para assinatura use subscription. Fonte de verdade de EXISTÊNCIA de representante."
+    meta:
+      ai_context: >
+        LEITURA: uma linha por rep, incluindo TODOS os status. A maioria da base não está ativa —
+        reps_count conta a rede inteira, histórico incluído.
+
+        DESAMBIGUAÇÃO: "quantos reps temos?" é ambíguo e a diferença é de várias vezes — rede
+        cadastrada (reps_count) ou rede ativa (active_reps_count)? Pergunte antes de responder.
+        "Score do rep" também é ambíguo: aqui é PERFIL de admissão; produção vive nas views
+        ranking_rep_*.
+
+        NUNCA: apresentar reps_count como "rede ativa" ou como tamanho do time comercial atual.
+{{ m.access_policy_transversal(min_level=40) }}
+    cubes:
+      - join_path: base_reps
+        includes: "*"
+
+    folders:
+      - name: "Medidas"
+        includes:
+          - reps_count
+          - active_reps_count
+          - agencies_count
+          - avg_rep_score
+      - name: "Identificação"
+        includes:
+          - rep_id
+          - name
+          - crm_contact_id
+          - billing_customer_id
+      - name: "Contato (PII)"
+        includes:
+          - email
+          - phone
+          - tax_id
+      - name: "Estrutura comercial"
+        includes:
+          - tier
+          - rep_status
+          - region
+          - territory
+          - account_manager
+          - company_id
+      - name: "Perfil e origem"
+        includes:
+          - cohort
+          - lead_tier
+          - plan
+          - rep_score
+      - name: "Geografia"
+        includes:
+          - city
+          - state
+      - name: "Ciclo de vida"
+        includes:
+          - onboarding_date
+          - exit_date
+          - last_portal_login

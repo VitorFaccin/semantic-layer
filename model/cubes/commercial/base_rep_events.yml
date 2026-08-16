@@ -1,0 +1,97 @@
+# PRIVATE — commercial events per rep, grain = ONE EVENT (an order or a sale).
+#
+# WHY THIS CUBE EXISTS: crossing two facts by rep (orders x sales) through joins would fan out —
+# each order row would multiply by each sale row of the same rep, inflating both. The answer is
+# an EVENT-grain table built upstream: one row per event, typed. Never join fact -> dim -> fact
+# to answer "orders and sales per rep"; use this cube.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_rep_events
+    sql_table: {{ table('core_rep', 'rep_commercial_events') }}
+    public: false
+    description: "Eventos comerciais por representante (pedido ou venda), no grão de evento. Existe para cruzar pedidos e vendas por rep sem produto cartesiano."
+
+    joins:
+      - name: base_reps
+        relationship: many_to_one
+        sql: "{CUBE}.rep_id = {base_reps}.rep_id"
+
+    dimensions:
+      - name: event_id
+        sql: event_id
+        type: string
+        primary_key: true
+        title: "ID do evento"
+        description: "Identificador único do evento. Chave do grão. String."
+      - name: event_type
+        sql: event_type
+        type: string
+        title: "Tipo de evento"
+        description: "Tipo do evento comercial. É o que separa as duas metades do cubo — sempre recorte por ele (ou use os segments) antes de contar."
+        meta:
+          values:
+            order: "pedido gerado pelo rep"
+            sale: "venda concluída pelo rep"
+      - name: rep_id
+        sql: rep_id
+        type: string
+        title: "ID do rep"
+        description: "Representante do evento. String."
+      - name: customer_id
+        sql: customer_id
+        type: string
+        title: "ID do cliente"
+        description: "Cliente envolvido no evento. String."
+      - name: product_line
+        sql: product_line
+        type: string
+        title: "Linha de produto"
+        description: "Linha de produto do evento. Eixo do filtro de linha (RLS)."
+      - name: amount
+        sql: amount
+        type: number
+        title: "Valor (linha)"
+        description: "Valor do evento NA LINHA (estimado no pedido, faturado na venda). Para totais use as measures. Numérico."
+      - name: event_date
+        sql: "CAST(event_date AS TIMESTAMP)"
+        type: time
+        title: "Data do evento"
+        description: "Data do evento. Use como timeDimension para a série de atividade do rep."
+
+    segments:
+      - name: order_events
+        sql: "{CUBE}.event_type = 'order'"
+        title: "Eventos de pedido"
+        description: "Apenas eventos de PEDIDO. FICAM FORA as vendas. Use para isolar a metade de originação."
+      - name: sale_events
+        sql: "{CUBE}.event_type = 'sale'"
+        title: "Eventos de venda"
+        description: "Apenas eventos de VENDA. FICAM FORA os pedidos. Complemento exato de order_events."
+
+    measures:
+{{ m.filtered_count('rep_orders_count', "{CUBE}.event_type = 'order'",
+   'Pedidos do rep no recorte. Reconcilia com orders.orders_count (mesma regra canônica). NÃO-aditivo.',
+   'event_id', 'count_distinct', 'Pedidos do rep') }}
+{{ m.filtered_count('rep_sales_count', "{CUBE}.event_type = 'sale'",
+   'Vendas do rep no recorte. Reconcilia com sales.sales_count. NÃO-aditivo.',
+   'event_id', 'count_distinct', 'Vendas do rep') }}
+{{ m.ratio_measure('order_to_sale_rate', '{rep_sales_count}', '{rep_orders_count}',
+   'Conversão pedido→venda em % no MESMO recorte. ATENÇÃO: compara eventos do período, não rastreia a jornada de um pedido específico — as vendas do mês podem vir de pedidos de meses anteriores, então em janelas curtas a taxa distorce (e pode passar de 100%). Use janelas de 3 meses ou mais. NÃO-aditivo.',
+   'percent', 'Conv. pedido→venda') }}
+      - name: distinct_customers_count
+        sql: customer_id
+        type: count_distinct
+        format: number
+        title: "Clientes atendidos"
+        description: "Clientes distintos com QUALQUER evento (pedido ou venda) do rep no recorte. NÃO-aditivo."
+        meta:
+          additive: false
+      - name: active_reps_count
+        sql: rep_id
+        type: count_distinct
+        format: number
+        title: "Reps com atividade"
+        description: "Representantes distintos com pelo menos um evento no recorte. É atividade, não status: para status cadastral use reps.active_reps_count. NÃO-aditivo."
+        meta:
+          additive: false
+          avoid: "para status cadastral use reps.active_reps_count"

@@ -1,0 +1,244 @@
+# PRIVATE — sales-rep registry (the network entity), grain = one row per rep.
+# Source of truth for rep EXISTENCE: a rep missing from a fact table means "no activity",
+# never "does not exist". Every fact view reaches these attributes through a many_to_one
+# join (see macros.jinja: rep_attribute_block), so the same cuts exist everywhere.
+#
+# PII (email, phone, tax_id) is declared HERE only, gated once by the view's access_policy —
+# never copied into fact views.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_reps
+    sql_table: {{ table('core_rep', 'rep_overview') }}
+    public: false
+    description: "Representantes comerciais (rede de vendas), no grão de rep. Cadastro e perfil: status, tier, região, território, gerente de conta, plano e datas de ciclo de vida. Fonte de verdade de EXISTÊNCIA de representante."
+
+    dimensions:
+      - name: rep_id
+        sql: rep_id
+        type: string
+        primary_key: true
+        title: "ID do rep"
+        description: "Identificador único do representante. Use para agrupar/identificar reps e como chave de join a partir de vendas/pedidos/cotações. String."
+      - name: name
+        sql: full_name
+        type: string
+        title: "Nome do rep"
+        description: "Nome do representante. Use para exibição; para agrupar de forma estável prefira rep_id. String."
+      - name: tier
+        sql: tier
+        type: string
+        title: "Tier"
+        description: "Tier do representante na rede. Valores literais no dado (exatamente 3): 'Independent' (rep autônomo — NÃO é agência), 'Associate' e 'Agency'. AGÊNCIA = 'Associate' + 'Agency': quando o usuário falar de agência(s), filtre tier IN ('Associate','Agency'); não existe o valor 'Agency' isolado cobrindo os dois. Para CONTAR agências use a measure agencies_count (company_id distinto), pois uma agência tem vários reps."
+        meta:
+          synonyms: ["agência", "agências", "rep autônomo", "tipo de rep"]
+          avoid: "agência = tier IN ('Associate','Agency'); 'Independent' é o autônomo, fora do conceito de agência"
+          values:
+            Independent: "representante autônomo, sem estrutura de agência"
+            Associate: "rep associado a uma agência"
+            Agency: "titular da agência (detém o company_id)"
+      - name: rep_status
+        sql: rep_status
+        type: string
+        title: "Status do rep"
+        description: "Status atual do representante na rede. É o filtro por trás de active_reps_count. Use para separar rede ativa de inativa."
+        meta:
+          values:
+            Active: "ativo e operando"
+            Suspended: "suspenso temporariamente"
+            Churned: "saiu da rede"
+            Pending: "cadastro em aprovação"
+      - name: company_id
+        sql: company_id
+        type: string
+        title: "ID da empresa"
+        description: "Identificador da empresa/agência do rep. Use como chave para identificar/contar AGÊNCIAS (vários reps compartilham o mesmo id); é a base da measure agencies_count. String (pode ser nulo para autônomos)."
+        meta:
+          synonyms: ["id da agência", "empresa do rep"]
+          coverage: "NULL para representantes autônomos (tier 'Independent')"
+      - name: cohort
+        sql: cohort
+        type: string
+        title: "Safra"
+        description: "Safra (turma) de entrada do rep, no formato YYYY-QN. Use para análises por coorte de entrada. String."
+      - name: region
+        sql: region
+        type: string
+        title: "Região"
+        description: "Macro-região comercial do rep (agrupa territórios). Use para o corte mais amplo de geografia comercial; para o detalhe use territory."
+        meta:
+          synonyms: ["macro-região", "regional"]
+      - name: territory
+        sql: territory
+        type: string
+        title: "Território"
+        description: "Território comercial do rep (o recorte operacional dentro da região). Use para o corte de carteira; para o macro-grupo use region. String."
+      - name: account_manager
+        sql: account_manager
+        type: string
+        title: "Gerente de conta"
+        description: "Gerente de conta responsável pelo território do rep. Use para agrupar a rede por gerente. String."
+        meta:
+          synonyms: ["gerente", "AM", "responsável pela carteira"]
+          coverage: "NULL em territórios sem gerente atribuído"
+      - name: lead_tier
+        sql: lead_tier
+        type: string
+        title: "Origem/qualificação"
+        description: "Carimbo de qualificação do lead que originou o rep, derivado no CRM a partir do score e do canal de aquisição. Use para analisar a qualidade de origem da rede."
+        meta:
+          synonyms: ["tratativa", "qualificação do lead", "carimbo de origem"]
+          coverage: "NULL nas safras anteriores ao processo de carimbo — NULL não é 'sem qualidade'"
+          values:
+            Premium: "lead de alta qualificação (score alto ou indicação qualificada)"
+            Standard: "lead de qualificação média, via mídia paga"
+            Referral: "veio por indicação de outro rep"
+            Outbound: "prospecção ativa do time de expansão"
+      - name: plan
+        sql: plan
+        type: string
+        title: "Plano (CRM)"
+        description: "Plano de assinatura DECLARADO no CRM. Para o plano observado pelo comportamento real de COBRANÇA use subscription.plan. String."
+        meta:
+          avoid: "para comportamento real de pagamento use a view subscription"
+          values:
+            Annual: "assinatura anual"
+            Monthly: "assinatura mensal"
+            Trial: "período de teste, sem cobrança"
+      - name: city
+        sql: city
+        type: string
+        title: "Cidade"
+        description: "Cidade de contato do rep. Use para recortes geográficos detalhados. String."
+      - name: state
+        sql: state
+        type: string
+        title: "UF"
+        description: "Unidade federativa de contato do rep. Use para recortes geográficos. String."
+      - name: rep_score
+        sql: rep_score
+        type: number
+        title: "Score do rep"
+        description: "Score de PERFIL do representante, calculado do histórico profissional na admissão. Use para qualificação de perfil da rede. NÃO é score de produção: para ranking de produção use as views ranking_rep_*. Numérico."
+        meta:
+          synonyms: ["score de perfil", "score de admissão"]
+          coverage: "NULL quando o score não foi calculado (safras antigas)"
+          avoid: "para produção/ranking use as views ranking_rep_* — 'score do rep' é ambíguo, pergunte qual"
+      - name: email
+        sql: email
+        type: string
+        title: "E-mail"
+        description: "E-mail de contato do rep. PII: acesso restrito por perfil (RBAC). Use apenas para identificação/contato, nunca para agregação. String."
+      - name: phone
+        sql: phone
+        type: string
+        title: "Telefone"
+        description: "Telefone de contato do rep. PII: acesso restrito por perfil (RBAC). String."
+      - name: tax_id
+        sql: tax_id
+        type: string
+        title: "CPF/CNPJ"
+        description: "Documento fiscal do rep. PII forte: acesso restrito por perfil (RBAC). String."
+      - name: crm_contact_id
+        sql: crm_contact_id
+        type: string
+        title: "ID do contato (CRM)"
+        description: "Identificador do rep como contato no CRM — a chave para agir no CRM depois da consulta (abrir o registro, montar campanha). Não use para agrupar métricas: para isso use rep_id. String."
+        meta:
+          avoid: "para agrupar/contar reps use rep_id — este id serve para acionar o CRM"
+      - name: billing_customer_id
+        sql: billing_customer_id
+        type: string
+        title: "ID do assinante (billing)"
+        description: "Identificador do rep no sistema de cobrança. É a ponte com a assinatura: corresponde a subscription.customer_id. NULL quando o rep nunca teve cadastro de cobrança. String."
+        meta:
+          coverage: "NULL para reps sem cadastro de cobrança"
+      - name: onboarding_date
+        sql: "CAST(onboarding_date AS TIMESTAMP)"
+        type: time
+        title: "Data de onboarding"
+        description: "Data de entrada do rep na rede (ciclo atual). Use como timeDimension para análises de entrada. Timestamp."
+      - name: exit_date
+        sql: "CAST(exit_date AS TIMESTAMP)"
+        type: time
+        title: "Data de saída"
+        description: "Data de saída do rep (quando aplicável). NULL enquanto o rep está na rede. Use como timeDimension para análises de churn."
+        meta:
+          coverage: "NULL enquanto ativo — é semântica, não lacuna"
+      - name: last_portal_login
+        sql: "CAST(last_portal_login AS TIMESTAMP)"
+        type: time
+        title: "Último login (portal)"
+        description: "Data do ÚLTIMO login do rep no portal. NULL significa que o rep NUNCA logou — é semântica, não falha de dado. É um único carimbo, não série: 'quantos reps logaram no mês X' não é respondível aqui, use a view logins. Timestamp."
+        meta:
+          coverage: "NULL = nunca logou; não é gap de dado"
+          avoid: "para série mensal de engajamento use a view logins"
+
+    # ---- HIERARCHIES: geography and org, for BI clients that drill down --------------------
+    hierarchies:
+      - name: geography
+        title: "Geografia comercial"
+        levels:
+          - region
+          - state
+          - city
+      - name: org_structure
+        title: "Estrutura comercial"
+        levels:
+          - region
+          - territory
+          - account_manager
+
+    segments:
+      - name: active_reps
+        sql: "{CUBE}.rep_status = 'Active'"
+        title: "Reps ativos"
+        description: "Reps com status 'Active'. Definição canônica de rep ativo. FICAM FORA 'Suspended', 'Churned' e 'Pending' — juntos, a maioria da base. Use com qualquer measure para recortar a rede ativa; para a rede inteira não aplique segment."
+        meta:
+          synonyms: ["rede ativa", "reps ativos", "ativos"]
+      - name: agencies
+        sql: "{CUBE}.tier IN ('Associate', 'Agency')"
+        title: "Agências"
+        description: "Reps que operam sob agência: tiers 'Associate' e 'Agency'. FICA FORA 'Independent', que é o autônomo — para ele use o segment independent_reps. Para CONTAR agências use agencies_count (company_id distinto), pois uma agência tem vários reps."
+        meta:
+          synonyms: ["agência", "agências"]
+          avoid: "para contar agências use agencies_count (company_id), não uma contagem de rep"
+      - name: independent_reps
+        sql: "{CUBE}.tier = 'Independent'"
+        title: "Reps autônomos"
+        description: "Representantes autônomos (tier 'Independent'). É o complemento exato de agencies dentro dos três tiers existentes."
+        meta:
+          synonyms: ["autônomo", "rep independente"]
+      - name: never_logged_in
+        sql: "{CUBE}.last_portal_login IS NULL"
+        title: "Nunca logaram"
+        description: "Reps que NUNCA acessaram o portal. Combine com active_reps para 'ativos que nunca logaram' — o recorte de risco de engajamento."
+        meta:
+          synonyms: ["nunca logou", "sem acesso"]
+
+    measures:
+      - name: reps_count
+        sql: rep_id
+        type: count_distinct
+        format: number
+        title: "Qtd. de reps"
+        description: "Representantes distintos no recorte (toda a rede, independentemente de status). Use para o tamanho da rede. Para apenas ativos use active_reps_count. NÃO-aditivo (count distinct) — recalcule por recorte."
+        meta:
+          granularity: "rep"
+          additive: false
+          synonyms: ["tamanho da rede", "total de reps"]
+{{ m.filtered_count('active_reps_count', "{CUBE}.rep_status = 'Active'",
+   "Representantes com status 'Active'. Use para a base ativa da rede. Para todos os reps (qualquer status) use reps_count. NÃO-aditivo (count distinct) — recalcule por recorte.",
+   'rep_id', 'count_distinct', 'Reps ativos') }}
+{{ m.filtered_count('agencies_count', "{CUBE}.tier IN ('Associate', 'Agency')",
+   "Quantidade de AGÊNCIAS distintas = company_id distintos dos tiers 'Associate' e 'Agency'. Conta por empresa, e não por rep, porque uma agência tem vários reps — para contar reps use reps_count. NÃO-aditivo (count distinct).",
+   'company_id', 'count_distinct', 'Qtd. de agências') }}
+      - name: avg_rep_score
+        sql: rep_score
+        type: avg
+        format: number
+        title: "Score médio"
+        description: "Média do score de PERFIL dos reps do recorte. Considera apenas reps com score calculado — os sem score ficam fora da média, não entram como zero. NÃO-aditivo (média) — recalcule por recorte. NÃO é produção: para ranking use as views ranking_rep_*."
+        meta:
+          additive: false
+          coverage: "média apenas sobre reps com score calculado; NULL não entra como zero"
+          avoid: "para produção use ranking_rep_*; não somar médias entre recortes"

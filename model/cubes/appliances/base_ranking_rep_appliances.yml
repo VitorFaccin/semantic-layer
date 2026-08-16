@@ -1,0 +1,79 @@
+# PRIVATE — Appliances rep production ranking, grain = rep x reference month.
+# Production score, NOT profile score: reps.rep_score is the admission/profile score and the two
+# are routinely confused. Each line has its own ranking because the sales cycles are not
+# comparable across lines.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_ranking_rep_appliances
+    sql_table: {{ table('mart_appliances', 'rep_ranking_monthly') }}
+    public: false
+    description: "Ranking de produção dos representantes em Eletrodomésticos, no grão rep×mês de referência."
+
+    joins:
+      - name: base_reps
+        relationship: many_to_one
+        sql: "{CUBE}.rep_id = {base_reps}.rep_id"
+
+    dimensions:
+      - name: id
+        sql: "CONCAT({CUBE}.rep_id, '-', {CUBE}.reference_month)"
+        type: string
+        primary_key: true
+        title: "ID da linha"
+        description: "Chave técnica do grão (rep + mês). Use rep_id para agrupar. String."
+      - name: rep_id
+        sql: rep_id
+        type: string
+        title: "ID do rep"
+        description: "Representante ranqueado. String."
+      - name: reference_month
+        sql: "CAST(reference_month AS TIMESTAMP)"
+        type: time
+        title: "Mês de referência"
+        description: "Mês de referência do ranking. Use como timeDimension; o ranking é recalculado a cada mês."
+      - name: rank_position
+        sql: rank_position
+        type: number
+        title: "Posição"
+        description: "Posição do rep no ranking da linha naquele mês (1 = melhor). Numérico."
+      - name: quartile
+        sql: quartile
+        type: string
+        title: "Quartil"
+        description: "Quartil de produção do rep no mês. É classificação de PRODUÇÃO, não de perfil — para perfil use reps.rep_score."
+        meta:
+          avoid: "não confunda com o score de perfil (reps.rep_score)"
+          values:
+            Q1: "quartil superior de produção"
+            Q2: "segundo quartil"
+            Q3: "terceiro quartil"
+            Q4: "quartil inferior"
+
+    measures:
+      - name: production_score
+        sql: production_score
+        type: avg
+        format: number
+        title: "Score de produção"
+        description: "Média do score de produção dos reps no recorte (janela de 9 meses). NÃO é o score de perfil — para isso use reps.avg_rep_score. NÃO-aditivo (média)."
+        meta:
+          additive: false
+          avoid: "para score de perfil use reps.avg_rep_score"
+      - name: ranked_reps_count
+        sql: rep_id
+        type: count_distinct
+        format: number
+        title: "Reps ranqueados"
+        description: "Representantes distintos presentes no ranking do recorte. NÃO-aditivo."
+        meta:
+          additive: false
+      - name: total_production_amount
+        sql: production_amount
+        type: sum
+        format: currency
+        title: "Produção acumulada"
+        description: "Soma da produção (R$) considerada no ranking. Grão rep×mês; aditivo dentro do mesmo mês de referência — não some entre meses de referência, pois a janela de 9 meses se sobrepõe."
+        meta:
+          granularity: "rep×mês"
+          additive: false
+          avoid: "não some entre meses de referência — as janelas de 9 meses se sobrepõem"

@@ -1,0 +1,132 @@
+# PRIVATE — annual contract cycles, grain = subscriber x cycle.
+# A cycle is one paid year. It renewed when a LATER cycle exists for the same subscriber.
+# THE DENOMINATOR TRAP: "not renewed" alone includes cycles that are still RUNNING and could not
+# possibly have renewed yet. The renewal rate must divide by DECIDED cycles only (renewed +
+# expired-without-renewal) — the expired_not_renewed segment is that cut.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_renewals
+    sql_table: {{ table('core_billing', 'annual_renewal_cycles') }}
+    public: false
+    description: "Ciclos anuais de contrato dos representantes, no grão assinante×ciclo. Use para taxa de renovação, carteira a vencer e receita em risco."
+
+    joins:
+      - name: base_reps
+        relationship: many_to_one
+        sql: "{CUBE}.rep_id = {base_reps}.rep_id"
+
+    dimensions:
+      - name: cycle_id
+        sql: cycle_id
+        type: string
+        primary_key: true
+        title: "ID do ciclo"
+        description: "Identificador único do ciclo anual. Chave do grão. String."
+      - name: rep_id
+        sql: rep_id
+        type: string
+        title: "ID do rep"
+        description: "Representante dono do ciclo. String."
+      - name: renewal_status
+        sql: renewal_status
+        type: string
+        title: "Status de renovação"
+        description: "Se existe um ciclo posterior do mesmo assinante. ATENÇÃO: 'not_renewed' sozinho NÃO é churn — inclui os ciclos ainda vigentes; o corte de risco é o segment expired_not_renewed."
+        meta:
+          avoid: "'not_renewed' não é churn — cruze com expiry_status"
+          values:
+            renewed: "existe ciclo posterior do mesmo assinante"
+            not_renewed: "sem ciclo posterior — inclui os ciclos ainda vigentes"
+      - name: expiry_status
+        sql: expiry_status
+        type: string
+        title: "Situação do prazo"
+        description: "Situação do prazo do ciclo RELATIVA A HOJE (foto diária): já venceu ou ainda está vigente. Muda todo dia com o rebuild."
+        meta:
+          values:
+            expired: "a data prevista de renovação já passou"
+            current: "ciclo ainda vigente, dentro do prazo"
+      - name: cycle_value
+        sql: cycle_value
+        type: number
+        title: "Valor do ciclo (linha)"
+        description: "Valor pago no ciclo NA LINHA. Para totais use total_cycle_value. Numérico."
+      - name: commission_last_12m
+        sql: commission_last_12m
+        type: number
+        title: "Comissão 12m do rep"
+        description: "Comissão gerada pelo rep nos últimos 12 meses — a régua usada na negociação de renovação. É janela móvel a partir de HOJE, recalculada diariamente: NÃO é a comissão histórica da época do ciclo. Numérico."
+        meta:
+          avoid: "não leia como comissão histórica do ciclo — é janela móvel a partir de hoje"
+      - name: started_at
+        sql: "CAST(started_at AS TIMESTAMP)"
+        type: time
+        title: "Início do ciclo"
+        description: "Data de início do ciclo anual. Use como timeDimension para coortes de contrato."
+      - name: expected_renewal_at
+        sql: "CAST(expected_renewal_at AS TIMESTAMP)"
+        type: time
+        title: "Renovação prevista"
+        description: "Data em que a renovação é esperada (início + 1 ano). É o eixo da CARTEIRA DE VENCIMENTOS: 'quantos contratos vencem em setembro', 'vencendo nos próximos 30 dias'."
+      - name: renewed_at
+        sql: "CAST(renewed_at AS TIMESTAMP)"
+        type: time
+        title: "Data da renovação"
+        description: "Data de início do PRÓXIMO ciclo do mesmo assinante. NULL enquanto não renovou. É o eixo correto para 'renovações por mês' — não confunda com a data prevista."
+        meta:
+          coverage: "NULL enquanto o ciclo não renovou"
+          avoid: "para carteira de vencimentos use expected_renewal_at"
+
+    segments:
+      - name: renewed_cycles
+        sql: "{CUBE}.renewal_status = 'renewed'"
+        title: "Ciclos renovados"
+        description: "Ciclos que RENOVARAM (existe ciclo posterior). FICAM FORA os não renovados, inclusive os vigentes."
+      - name: current_cycles
+        sql: "{CUBE}.expiry_status = 'current'"
+        title: "Ciclos vigentes"
+        description: "Ciclos ainda dentro do prazo (foto de hoje). Combine com expected_renewal_at para 'vencendo nos próximos 30/60/90 dias'."
+      - name: expired_not_renewed
+        sql: "{CUBE}.expiry_status = 'expired' AND {CUBE}.renewal_status = 'not_renewed'"
+        title: "Vencidos sem renovar"
+        description: "O corte operacional da renovação: ciclos que VENCERAM e NÃO renovaram — a lista de churn candidato. FICAM FORA renovados e vigentes. É o denominador de perda da taxa de renovação."
+        meta:
+          synonyms: ["churn candidato", "venceu e não renovou"]
+
+    measures:
+      - name: cycles_count
+        sql: cycle_id
+        type: count_distinct
+        format: number
+        title: "Qtd. de ciclos"
+        description: "Ciclos distintos no recorte. NÃO-aditivo."
+        meta:
+          additive: false
+      - name: total_cycle_value
+        sql: cycle_value
+        type: sum
+        format: currency
+        title: "Valor dos ciclos"
+        description: "Soma do valor pago nos ciclos do recorte. Combine com expired_not_renewed para dimensionar a receita perdida. Aditivo."
+        meta:
+          additive: true
+      - name: commission_at_risk
+        sql: commission_last_12m
+        type: sum
+        format: currency
+        title: "Comissão em risco"
+        description: "Soma da comissão de 12 meses dos reps do recorte. Com current_cycles + janela de vencimento, é a leitura de 'receita em risco no trimestre'. Aditivo dentro do recorte."
+        meta:
+          additive: true
+{{ m.filtered_count('renewed_cycles_count', "{CUBE}.renewal_status = 'renewed'",
+   'Ciclos que renovaram. Numerador da taxa de renovação. NÃO-aditivo.',
+   'cycle_id', 'count_distinct', 'Ciclos renovados') }}
+{{ m.filtered_count('expired_not_renewed_count', "{CUBE}.expiry_status = 'expired' AND {CUBE}.renewal_status = 'not_renewed'",
+   'Ciclos que venceram sem renovar — a perda efetiva. Compõe o denominador da taxa de renovação. NÃO-aditivo.',
+   'cycle_id', 'count_distinct', 'Vencidos sem renovar') }}
+{{ m.filtered_count('current_cycles_count', "{CUBE}.expiry_status = 'current'",
+   'Ciclos ainda vigentes (foto de hoje). Ficam FORA do denominador da taxa de renovação porque ainda não podiam renovar. NÃO-aditivo.',
+   'cycle_id', 'count_distinct', 'Ciclos vigentes') }}
+{{ m.ratio_measure('renewal_rate', '{renewed_cycles_count}', '{renewed_cycles_count} + {expired_not_renewed_count}',
+   'Taxa de renovação em %: renovados ÷ ciclos DECIDIDOS (renovados + vencidos sem renovar). Os ciclos VIGENTES ficam fora do denominador de propósito — ainda não podiam ter renovado, e incluí-los dilui a taxa e a subestima. NÃO-aditivo (razão): recalcule por recorte.',
+   'percent', 'Taxa de renovação') }}

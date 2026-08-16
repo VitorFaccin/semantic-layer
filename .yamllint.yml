@@ -1,0 +1,20 @@
+# yamllint config for the PLAIN YAML in this repo (compose file, CI workflows).
+#
+# It deliberately does NOT cover model/**: those files are Jinja TEMPLATES, and yamllint dies on
+# `{% import %}` before checking anything. The model is linted by scripts/lint_model.py, which
+# renders the Jinja first and then rejects duplicate keys — the failure Cube actually punishes.
+extends: default
+
+ignore: |
+  model/
+  .venv/
+  node_modules/
+
+rules:
+  line-length:
+    max: 100
+  comments:
+    min-spaces-from-content: 1
+  truthy:
+    check-keys: false      # GitHub Actions uses `on:` as a key
+  document-start: disable

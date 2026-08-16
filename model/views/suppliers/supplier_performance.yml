@@ -1,0 +1,48 @@
+{% import 'macros.jinja' as m %}
+# PUBLIC — supplier performance. DOMAIN-GATED on the `suppliers` domain, which deliberately maps
+# to NO product line: a supplier analyst sees this view and gets zero rows on the transversal
+# commercial views (rbac.DOMAIN_TO_CATEGORY). That asymmetry is the point — supply-side access
+# should not leak revenue data.
+views:
+  - name: supplier_performance
+    description: "Desempenho de fornecedores, no grão fornecedor×mês: valor comprado, prazo médio de entrega, entregas no prazo e taxa de defeito. Use para avaliar confiabilidade de fornecimento e concentração de dependência."
+    meta:
+      ai_context: >
+        LEITURA: uma linha por fornecedor por mês. As taxas (on_time_rate, defect_rate) são razões
+        de duas somas do mesmo recorte — recalcule por recorte, nunca tire média de percentuais.
+
+        NUNCA: cruzar esta view com receita para inferir margem por fornecedor — o custo aqui é
+        de compra, não o custo alocado da venda.
+    access_policy:
+      - group: d_suppliers_10
+        member_level:
+          includes: "*"
+    cubes:
+      - join_path: base_supplier_performance
+        includes: "*"
+
+    folders:
+      - name: "Medidas — volume"
+        includes:
+          - purchase_amount
+          - suppliers_count
+      - name: "Medidas — qualidade"
+        includes:
+          - on_time_rate
+          - defect_rate
+          - avg_lead_time_days
+      - name: "Medidas — base de cálculo"
+        includes:
+          - delivered_on_time
+          - total_deliveries
+          - defective_units
+          - received_units
+      - name: "Recortes"
+        includes:
+          - supplier_id
+          - supplier_name
+          - product_line
+          - country
+      - name: "Tempo"
+        includes:
+          - reference_month

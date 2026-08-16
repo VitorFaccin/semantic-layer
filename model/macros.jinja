@@ -1,0 +1,239 @@
+{# ====================================================================
+   model/macros.jinja — REUSABLE Jinja macros (YAML snippets).
+   Use it to repeat model BLOCKS without heavy logic. For business RULES
+   (SQL predicates, lists) use model/globals.py instead.
+
+   usage in .yml:
+     {% import 'macros.jinja' as m %}
+     measures:
+{{ '{{ m.commission_measures() }}' }}
+   ==================================================================== #}
+
+{# --------------------------------------------------------------------
+   ACCESS POLICY — design notes.
+   Cube's access_policy `condition` parser is too limited (no comparisons,
+   no `in`, no chained method/or) AND Cube renders an interpolated string
+   ({{ x }}) JSON-quoted, so a domain slug can't be safely interpolated into a
+   group name. Therefore ALL access logic lives in context_to_groups (cube.py),
+   exposed as groups t<band> (transversal) and d_<domain>_<band> (domain), and a
+   view policy matches on a GROUP alone, with NO conditions.
+
+   - Transversal views use the macro below (group t<min_level>, numeric → safe).
+   - DOMAIN-SPECIFIC views INLINE their policy with a hardcoded group
+     (e.g. `group: d_appliances_10`) because the slug can't be interpolated
+     (Cube would quote it). See any model/views/<domain>/*.yml.
+   See rbac.py / docs/access-control.md.
+   -------------------------------------------------------------------- #}
+{% macro access_policy_transversal(min_level=10) %}
+    access_policy:
+      - group: t{{ min_level }}
+        member_level:
+          includes: "*"
+{% endmacro %}
+
+{# --------------------------------------------------------------------
+   rep_attribute_block(join_path, extra) — the STANDARD block of sales-rep
+   attributes every FACT view exposes through its many_to_one join to base_reps.
+
+   Why a macro: without it the attributes drift apart across views (one view
+   offers `territory`, another only `region`), which silently kills whole
+   question classes the data could already answer ("revenue per account
+   manager", "quota attainment per tier"). One macro = one place to change,
+   and every fact view offers the same cuts.
+
+   The join is many_to_one on a UNIQUE key (rep_id in rep_overview), so this
+   never fans out — the fanout test tier asserts it per view.
+
+   Rep PII stays OUT of fact views on purpose: email/phone and external ids
+   live only on the `reps` view, where the RBAC gate is applied once.
+   (Payer PII is a different story: the billing views expose it at their own
+   grain behind a level-40 floor, not through this block.)
+
+   Args:
+     join_path: e.g. "base_orders.base_reps"
+     extra: view-specific members to append (e.g. ["last_portal_login"])
+   -------------------------------------------------------------------- #}
+{% macro rep_attribute_block(join_path, extra=[]) %}
+      - join_path: {{ join_path }}
+        prefix: true
+        includes:
+          # --- standard rep attribute block (macros.jinja) ---
+          - tier
+          - rep_status
+          - cohort
+          - region
+          - territory
+          - account_manager
+          - lead_tier
+          - company_id
+          - city
+          - state
+{% for member in extra %}          - {{ member }}
+{% endfor %}          # --- rep segments (prefixed base_reps_*) ---
+          - active_reps
+          - agencies
+          - independent_reps
+{% endmacro %}
+
+{# --------------------------------------------------------------------
+   commission_measures() — the Total / Company / Rep commission trio (SUM).
+   VALID ONLY on a SALE-GRAIN source (one row per sale), where the amount is
+   stored once per sale and SUM is correct/additive.
+   DO NOT use on an installment-grain source (base_commissions): there the
+   amount REPEATS across installment/payment rows and a plain SUM OVER-COUNTS.
+   For the commission total read the SALE-grain source instead
+   (sales.total_commission_amount); keep the installment table only for the
+   margin rate % (numerator / base at the SAME grain, which cancels the
+   repetition). See model/cubes/commercial/README.md.
+   Expects columns commission_{total,company,rep}_amount on the cube.
+   -------------------------------------------------------------------- #}
+{% macro commission_measures() %}
+      - name: total_commission_amount
+        title: "Comissão total"
+        sql: commission_total_amount
+        type: sum
+        format: currency
+        description: "Comissão total (empresa + representante) em R$, somada em todas as parcelas/registros. Use para a receita de comissão do produto. Para só a parte da empresa use total_commission_company_amount; só a do rep, total_commission_rep_amount. Para VALOR DE VENDA (não comissão) use sales.total_sale_amount. Grão comissão×parcela; aditivo."
+        meta:
+          granularity: "comissão×parcela"
+          additive: true
+          avoid: "para valor de venda use sales.total_sale_amount"
+          synonyms: ["comissão bruta", "receita de comissão"]
+      - name: total_commission_company_amount
+        title: "Comissão empresa"
+        sql: commission_company_amount
+        type: sum
+        format: currency
+        description: "Parte da comissão retida pela empresa em R$. Use para a receita que fica na casa. Para o total use total_commission_amount; para a parte do rep use total_commission_rep_amount. Grão comissão×parcela; aditivo."
+        meta:
+          granularity: "comissão×parcela"
+          additive: true
+          synonyms: ["receita da empresa", "margem retida"]
+      - name: total_commission_rep_amount
+        title: "Comissão do rep"
+        sql: commission_rep_amount
+        type: sum
+        format: currency
+        description: "Parte da comissão repassada ao representante em R$. Use para o repasse ao rep. Para o total use total_commission_amount; para a parte da empresa use total_commission_company_amount. Grão comissão×parcela; aditivo."
+        meta:
+          granularity: "comissão×parcela"
+          additive: true
+          synonyms: ["repasse ao rep", "comissão do vendedor"]
+{% endmacro %}
+
+{# --------------------------------------------------------------------
+   ratio_measure(name, num, den, description, fmt) — a ratio of two
+   other measures: num / NULLIF(den, 0). `num`/`den` are measure
+   references in Cube curly-brace syntax, e.g. "{total_commission_company_amount}".
+   -------------------------------------------------------------------- #}
+{% macro ratio_measure(name, num, den, description='', fmt='percent', title='') %}
+{% set _expr = '100.0 * (' ~ num ~ ') / NULLIF(' ~ den ~ ', 0)' %}
+      - name: {{ name }}
+        type: number
+        sql: {{ _expr }}
+        format: {{ fmt }}
+{% if title %}        title: {{ title }}
+{% endif %}        description: {{ description }}
+        meta:
+          additive: false
+{% endmacro %}
+
+{# --------------------------------------------------------------------
+   filtered_count(name, condition, description, sql_col, type) — a
+   count / count_distinct restricted by a SQL condition. Use {CUBE} in
+   the condition; pass sql_col for count_distinct of a specific column.
+   -------------------------------------------------------------------- #}
+{% macro filtered_count(name, condition, description='', sql_col='', type='count_distinct', title='') %}
+      - name: {{ name }}
+        type: {{ type }}
+{% if sql_col %}        sql: {{ sql_col }}
+{% endif %}{% if title %}        title: {{ title }}
+{% endif %}        filters:
+          - sql: {{ condition }}
+        description: {{ description }}
+{% endmacro %}
+
+{# --------------------------------------------------------------------
+   funnel_stage_measures() — the 4 stages of the chained journey
+   (quote -> order -> approved -> sale) as count_distinct, plus the
+   stage-to-stage conversion ratios. Specific to the funnel mart's
+   column names.
+   -------------------------------------------------------------------- #}
+{% macro funnel_stage_measures() %}
+      - name: funnel_quotes
+        title: "Funil: cotações"
+        sql: quote_id
+        type: count_distinct
+        format: number
+        description: "Cotações distintas no funil (topo). Métrica do funil encadeado — cobre APENAS as 3 linhas de produto com esteira própria. Para a contagem de cotações de TODOS os produtos use quotes.total_quotes. Grão da jornada; aditivo."
+        meta:
+          granularity: "jornada (cotação→venda)"
+          additive: true
+          coverage: "apenas as 3 linhas de produto com esteira"
+          avoid: "para todos os produtos use quotes.total_quotes"
+      - name: funnel_orders
+        title: "Funil: pedidos"
+        sql: order_id
+        type: count_distinct
+        format: number
+        description: "Pedidos distintos gerados a partir das cotações, dentro do funil. Para pedidos de todos os produtos use orders.orders_count. Grão da jornada; aditivo."
+        meta:
+          granularity: "jornada (cotação→venda)"
+          additive: true
+          coverage: "apenas as 3 linhas de produto com esteira"
+          avoid: "para todos os produtos use orders.orders_count"
+      - name: funnel_approved
+        title: "Funil: aprovados"
+        sql: approved_order_id
+        type: count_distinct
+        format: number
+        description: "Pedidos que passaram na análise de crédito/limite, dentro do funil. Etapa que só existe aqui (depende do CRM). Grão da jornada; aditivo."
+        meta:
+          granularity: "jornada (cotação→venda)"
+          additive: true
+          coverage: "apenas as 3 linhas de produto com esteira"
+      - name: funnel_sales
+        title: "Funil: vendas"
+        sql: sale_order_id
+        type: count_distinct
+        format: number
+        description: "Pedidos que viraram venda concluída (faturamento), dentro do funil. Para a contagem de vendas de todos os produtos use sales.sales_count. Grão da jornada; aditivo."
+        meta:
+          granularity: "jornada (cotação→venda)"
+          additive: true
+          coverage: "apenas as 3 linhas de produto com esteira"
+          avoid: "para todos os produtos use sales.sales_count"
+{{ ratio_measure('conv_quote_to_order', '{funnel_orders}', '{funnel_quotes}',
+   'Conversão Cotação → Pedido em %, dentro do funil. NÃO-aditivo (razão; não some entre recortes).',
+   'percent', 'Conv. cotação→pedido') }}
+{{ ratio_measure('conv_order_to_approved', '{funnel_approved}', '{funnel_orders}',
+   'Conversão Pedido → Aprovado em %, dentro do funil. NÃO-aditivo (razão; não some entre recortes).',
+   'percent', 'Conv. pedido→aprovado') }}
+{{ ratio_measure('conv_approved_to_sale', '{funnel_sales}', '{funnel_approved}',
+   'Conversão Aprovado → Venda em %, dentro do funil. NÃO-aditivo (razão; não some entre recortes).',
+   'percent', 'Conv. aprovado→venda') }}
+{{ ratio_measure('conv_quote_to_sale', '{funnel_sales}', '{funnel_quotes}',
+   'Conversão ponta a ponta Cotação → Venda em %. É a ÚNICA forma de obter cotação→venda. NÃO-aditivo (razão; não some entre recortes). Também chamado de conversão total do funil.',
+   'percent', 'Conv. cotação→venda') }}
+{% endmacro %}
+
+{# --------------------------------------------------------------------
+   deal_stage_measures() — won/lost/open counts shared by every vertical
+   `operational_*` cube. Keeps the three product pipelines symmetric:
+   the same question ("quantos negócios ganhos?") resolves the same way
+   in every line of business.
+   -------------------------------------------------------------------- #}
+{% macro deal_stage_measures() %}
+{{ filtered_count('won_deals_count', "{CUBE}.status = 'won'",
+   'Negócios GANHOS no recorte (deal fechado). NÃO-aditivo (count distinct) — recalcule por recorte.',
+   'deal_id', 'count_distinct', 'Negócios ganhos') }}
+{{ filtered_count('lost_deals_count', "{CUBE}.status = 'lost'",
+   'Negócios PERDIDOS no recorte. Abra por lost_reason para o motivo. NÃO-aditivo (count distinct).',
+   'deal_id', 'count_distinct', 'Negócios perdidos') }}
+{{ filtered_count('open_deals_count', "{CUBE}.status = 'open'",
+   'Negócios ABERTOS (em andamento) no recorte — é foto do estado atual, não fluxo do período. NÃO-aditivo.',
+   'deal_id', 'count_distinct', 'Negócios abertos') }}
+{{ ratio_measure('win_rate', '{won_deals_count}', '{won_deals_count} + {lost_deals_count}',
+   'Taxa de ganho em % = ganhos ÷ (ganhos + perdidos). Os negócios ABERTOS ficam fora do denominador — ainda não foram decididos. NÃO-aditivo (razão): recalcule por recorte, nunca some.',
+   'percent', 'Taxa de ganho') }}
+{% endmacro %}

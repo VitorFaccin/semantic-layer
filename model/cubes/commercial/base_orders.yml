@@ -1,0 +1,184 @@
+# PRIVATE — orders, grain = one row per order (root AND child rows).
+# THE CANONICAL COUNTING RULE lives here: an order counts when it is a ROOT order
+# (parent_order_id IS NULL — child rows are re-submissions of the same deal) and is NOT a
+# self-purchase (the rep buying for themselves). Both cuts are baked into orders_count and the
+# value measures; the excluded slices stay reachable through audit measures so reconciliation
+# with the raw table always closes.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_orders
+    sql_table: {{ table('core_orders', 'orders_overview') }}
+    public: false
+    description: "Pedidos de TODOS os produtos, no grão de pedido. Contagem canônica (só raiz, sem autocompra) mais as medidas de auditoria que expõem exatamente o que fica de fora."
+
+    joins:
+      - name: base_reps
+        relationship: many_to_one
+        sql: "{CUBE}.rep_id = {base_reps}.rep_id"
+      - name: base_products
+        relationship: many_to_one
+        sql: "{CUBE}.product_id = {base_products}.product_id"
+
+    dimensions:
+      - name: order_id
+        sql: order_id
+        type: string
+        primary_key: true
+        title: "ID do pedido"
+        description: "Identificador único do pedido. Chave do grão deste cubo. String."
+      - name: product_line
+        sql: product_line
+        type: string
+        title: "Linha de produto"
+        description: "Linha de produto do pedido (Appliances, Furniture, Electronics). Dimensão transversal para abrir pedidos por produto; é também o eixo do filtro de linha (RLS)."
+        meta:
+          synonyms: ["categoria", "linha"]
+      - name: product_id
+        sql: product_id
+        type: number
+        title: "ID do produto"
+        description: "Produto do pedido. Chave de join ao catálogo products. Numérico."
+      - name: rep_id
+        sql: rep_id
+        type: string
+        title: "ID do rep"
+        description: "Representante que gerou o pedido. Use para agrupar por rep. String."
+      - name: customer_id
+        sql: customer_id
+        type: string
+        title: "ID do cliente"
+        description: "Cliente do pedido. Nunca é nulo. String."
+      - name: parent_order_id
+        sql: parent_order_id
+        type: string
+        title: "Pedido pai"
+        description: "Identificador do pedido PAI; preenchido só em pedidos FILHOS, nulo quando o próprio pedido é a raiz. É o critério de orders_count (raiz = pedido gerado). Para separar pai/filho diretamente use order_level."
+        meta:
+          synonyms: ["pedido raiz", "pedido originador"]
+      - name: order_level
+        sql: "CASE WHEN {CUBE}.parent_order_id IS NULL THEN 'Raiz' ELSE 'Filho' END"
+        type: string
+        title: "Nível do pedido"
+        description: "Nível do pedido na hierarquia: 'Raiz' (origina o negócio) ou 'Filho' (reenvio/duplicata do mesmo negócio). Use para abrir/segmentar por pai/filho."
+        meta:
+          values:
+            Raiz: "pedido que origina o negócio — é o que a contagem canônica conta"
+            Filho: "reenvio do mesmo negócio; fica fora da contagem canônica"
+      - name: is_self_purchase
+        sql: "({CUBE}.customer_id = {CUBE}.rep_id)"
+        type: boolean
+        title: "Autocompra"
+        description: "TRUE quando o cliente do pedido é o PRÓPRIO representante (rep comprando para si). A regra canônica EXCLUI esses pedidos de todas as medidas de negócio; use com all_orders_count para auditar o corte."
+        meta:
+          synonyms: ["autocompra", "pedido próprio"]
+          avoid: "as medidas de negócio já excluem autocompra — não filtre de novo"
+      - name: status_category
+        sql: status_category
+        type: string
+        title: "Categoria do status"
+        description: "Agrupamento do estágio do pedido. Use para agrupar estágios em grupos amplos."
+        meta:
+          values:
+            Open: "em andamento"
+            Approved: "aprovado, aguardando faturamento"
+            Fulfilled: "entregue/faturado"
+            Rejected: "recusado"
+      - name: assumed_value
+        sql: assumed_value
+        type: number
+        title: "Valor estimado (linha)"
+        description: "Valor estimado do pedido NA LINHA. Para totais use total_assumed_value. Numérico."
+        meta:
+          avoid: "para totais use total_assumed_value"
+      - name: created_at
+        sql: "CAST(created_at AS TIMESTAMP)"
+        type: time
+        title: "Data de criação"
+        description: "Data de criação do pedido. Use como timeDimension para séries temporais de pedidos. Timestamp."
+
+    segments:
+      - name: root_orders
+        sql: "{CUBE}.parent_order_id IS NULL"
+        title: "Pedidos raiz"
+        description: "Apenas pedidos RAIZ — o negócio originado. FICAM FORA os pedidos filhos, reenvios do mesmo negócio. É parte do corte que orders_count aplica; use o segment para levar esse recorte a OUTRAS measures."
+        meta:
+          synonyms: ["pedidos pai", "pedidos gerados"]
+      - name: child_orders
+        sql: "{CUBE}.parent_order_id IS NOT NULL"
+        title: "Pedidos filhos"
+        description: "Apenas pedidos FILHOS: reenvios/duplicatas do mesmo negócio. Complemento exato de root_orders. Use para analisar reenvio, nunca para volume de negócio."
+
+    measures:
+      - name: orders_count
+        sql: order_id
+        type: count_distinct
+        format: number
+        title: "Pedidos gerados"
+        description: "Pedidos gerados — a contagem CANÔNICA: pedidos distintos, apenas RAIZ e SEM autocompra. Exclui reenvios (pedidos filhos) e a autocompra do rep. Use para 'quantos pedidos foram gerados'. Para auditar o que fica fora use self_purchase_orders_count e all_orders_count. NÃO-aditivo."
+        filters:
+          - sql: "{CUBE}.parent_order_id IS NULL AND {CUBE}.customer_id != {CUBE}.rep_id"
+        meta:
+          granularity: "pedido"
+          additive: false
+          synonyms: ["pedidos-raiz", "pedidos gerados", "contagem canônica"]
+          avoid: "para auditoria use all_orders_count; a autocompra excluída está em self_purchase_orders_count"
+{{ m.filtered_count('self_purchase_orders_count', "{CUBE}.parent_order_id IS NULL AND {CUBE}.customer_id = {CUBE}.rep_id",
+   'AUDITORIA: pedidos-raiz de AUTOCOMPRA (cliente = próprio rep) — exatamente o que a contagem canônica exclui. orders_count + self_purchase_orders_count = total de pedidos-raiz, então a reconciliação com o dado cru fecha sempre. NÃO-aditivo.',
+   'order_id', 'count_distinct', 'Pedidos de autocompra') }}
+      - name: all_orders_count
+        sql: order_id
+        type: count_distinct
+        format: number
+        title: "Pedidos (auditoria)"
+        description: "Pedidos (todas as linhas): contagem de TODOS os pedidos, incluindo filhos e autocompra. Use APENAS para auditoria/reconciliação. Para 'pedidos gerados' use orders_count. NÃO-aditivo."
+        meta:
+          granularity: "pedido"
+          additive: false
+          avoid: "para 'pedidos gerados' use orders_count (só raiz, sem autocompra)"
+{{ m.filtered_count('child_orders_count', "{CUBE}.parent_order_id IS NOT NULL",
+   'Pedidos FILHOS distintos — reenvios/duplicatas do mesmo negócio. Use para medir reenvio. Para pedidos gerados use orders_count. NÃO-aditivo.',
+   'order_id', 'count_distinct', 'Pedidos filhos') }}
+      - name: total_assumed_value
+        sql: assumed_value
+        type: sum
+        format: currency
+        title: "Valor estimado"
+        description: "Soma do valor estimado (R$) dos pedidos-raiz sem autocompra — mesmo corte de orders_count, para numerador e denominador coerentes. Grão de pedido; aditivo."
+        filters:
+          - sql: "{CUBE}.parent_order_id IS NULL AND {CUBE}.customer_id != {CUBE}.rep_id"
+        meta:
+          granularity: "pedido"
+          additive: true
+      - name: ordering_reps_count
+        sql: rep_id
+        type: count_distinct
+        format: number
+        title: "Reps com pedidos"
+        description: "Representantes distintos com pedidos para terceiros no recorte (universo canônico). Use para medir reps ativos em originação. NÃO-aditivo."
+        filters:
+          - sql: "{CUBE}.customer_id != {CUBE}.rep_id"
+        meta:
+          additive: false
+      - name: ordering_customers_count
+        sql: customer_id
+        type: count_distinct
+        format: number
+        title: "Clientes com pedidos"
+        description: "Clientes distintos com pedidos no recorte, sem autocompra. Cliente com pedido não é cliente com venda: para quem comprou use sales.buying_customers_count. NÃO-aditivo."
+        filters:
+          - sql: "{CUBE}.customer_id != {CUBE}.rep_id"
+        meta:
+          additive: false
+
+    pre_aggregations:
+      - name: orders_by_line_monthly
+        measures:
+          - total_assumed_value
+        dimensions:
+          - product_line
+          - status_category
+        time_dimension: created_at
+        granularity: month
+        partition_granularity: year
+        refresh_key:
+          every: 1 hour

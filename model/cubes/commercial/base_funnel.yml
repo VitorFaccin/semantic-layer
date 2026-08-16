@@ -1,0 +1,67 @@
+# PRIVATE — chained journey funnel, grain = one row per journey (quote -> order -> approved -> sale).
+# Pre-joined upstream so the four stages sit on one row and the conversion ratios are simple
+# divisions. COVERAGE CAVEAT: it only covers the product lines that have their own pipeline —
+# for counts across every product, use the transversal cubes (quotes, orders, sales).
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_funnel
+    sql_table: {{ table('core_funnel', 'journey_funnel') }}
+    public: false
+    description: "Funil encadeado cotação→pedido→aprovado→venda, no grão da jornada. Use para CONVERSÃO entre etapas; para volumes da empresa use as views transversais."
+
+    dimensions:
+      - name: journey_id
+        sql: journey_id
+        type: string
+        primary_key: true
+        title: "ID da jornada"
+        description: "Identificador único da jornada no funil. Chave do grão. String."
+      - name: product_line
+        sql: product_line
+        type: string
+        title: "Linha de produto"
+        description: "Linha de produto da jornada. Eixo do filtro de linha (RLS) e recorte principal do funil."
+      - name: quote_id
+        sql: quote_id
+        type: string
+        title: "ID da cotação"
+        description: "Cotação que abriu a jornada. String."
+      - name: order_id
+        sql: order_id
+        type: string
+        title: "ID do pedido"
+        description: "Pedido gerado na jornada. NULL quando a jornada não chegou a pedido."
+        meta:
+          coverage: "NULL quando a etapa não foi alcançada"
+      - name: approved_order_id
+        sql: approved_order_id
+        type: string
+        title: "ID do pedido aprovado"
+        description: "Pedido que passou na análise de crédito/limite. NULL quando não chegou lá."
+        meta:
+          coverage: "NULL quando a etapa não foi alcançada"
+      - name: sale_order_id
+        sql: sale_order_id
+        type: string
+        title: "ID do pedido faturado"
+        description: "Pedido que virou venda concluída. NULL quando a jornada não fechou."
+        meta:
+          coverage: "NULL quando a etapa não foi alcançada"
+      - name: cohort_month
+        sql: cohort_month
+        type: string
+        title: "Competência (coorte)"
+        description: "Mês de competência da jornada no formato YYYY-MM. O funil é uma COORTE: a venda é atribuída ao mês da jornada, não ao mês em que fechou. String."
+        meta:
+          ai_context: >
+            LEITURA: coorte, não fluxo do período. Uma jornada de março que fechou em maio conta
+            em março. Por isso os percentuais de meses recentes ainda sobem — a coorte não
+            amadureceu. Para "vendas fechadas no mês", use sales.
+      - name: started_at
+        sql: "CAST(started_at AS TIMESTAMP)"
+        type: time
+        title: "Início da jornada"
+        description: "Data de início da jornada. Use como timeDimension para séries de coorte."
+
+    measures:
+{{ m.funnel_stage_measures() }}
