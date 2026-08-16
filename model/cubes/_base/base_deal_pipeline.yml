@@ -1,0 +1,131 @@
+# ABSTRACT — shared skeleton for the per-product-line pipeline cubes.
+# Not a table of its own: `extends` copies these members into base_operational_appliances,
+# base_operational_furniture and base_operational_electronics, which only declare their own
+# `sql_table` plus whatever is specific to that line.
+#
+# Why extends and not a macro: the three verticals share MEMBER DEFINITIONS (same names, same
+# semantics, same descriptions), and extends keeps them as ONE definition inheritance-wise —
+# change the description here and all three views update. A Jinja macro would copy text; extends
+# creates a real parent/child relation Cube understands.
+#
+# Everything here is `public: false` — the verticals are exposed through their own views only.
+{% import 'macros.jinja' as m %}
+cubes:
+  - name: base_deal_pipeline
+    sql_table: {{ table('mart_pipeline', 'deal_pipeline_template') }}
+    public: false
+    description: "ABSTRATO: esqueleto de esteira de negócios reutilizado por cada linha de produto. Não consulte diretamente — use operational_appliances, operational_furniture ou operational_electronics."
+
+    joins:
+      - name: base_reps
+        relationship: many_to_one
+        sql: "{CUBE}.rep_id = {base_reps}.rep_id"
+
+    dimensions:
+      - name: deal_id
+        sql: deal_id
+        type: string
+        primary_key: true
+        title: "ID do negócio"
+        description: "Identificador único do negócio (deal) na esteira. Chave do grão deste cubo. String."
+      - name: rep_id
+        sql: rep_id
+        type: string
+        title: "ID do representante"
+        description: "Representante responsável pelo negócio. Use para agrupar por rep e cruzar com a view reps. String."
+      - name: customer_id
+        sql: customer_id
+        type: string
+        title: "ID do cliente"
+        description: "Cliente do negócio. Use para agrupar por cliente. String."
+      - name: status
+        sql: status
+        type: string
+        title: "Status do negócio"
+        description: "Estado atual do negócio na esteira. Use para separar decidido de aberto; os segments won_deals/lost_deals/open_deals já aplicam o corte."
+        meta:
+          values:
+            won: "negócio fechado e faturado"
+            lost: "negócio perdido — veja lost_reason"
+            open: "em andamento, ainda sem decisão"
+      - name: stage_name
+        sql: stage_name
+        type: string
+        title: "Etapa"
+        description: "Etapa atual do negócio dentro da esteira (ex.: Qualificação, Proposta, Negociação). Use para ver onde o pipeline trava. String."
+      - name: lost_reason
+        sql: lost_reason
+        type: string
+        title: "Motivo da perda"
+        description: "Motivo registrado quando o negócio é perdido. NULL quando o negócio não foi perdido — não é lacuna de dado. Use com o segment lost_deals para tabular motivos."
+        meta:
+          coverage: "preenchido apenas em negócios com status 'lost'"
+          values:
+            "Preço": "cliente considerou o preço acima do aceitável"
+            "Prazo de entrega": "prazo incompatível com a necessidade"
+            "Concorrência": "fechou com outro fornecedor"
+            "Crédito negado": "reprovado na análise de limite"
+            "Sem resposta": "cliente parou de responder"
+      - name: deal_amount
+        sql: deal_amount
+        type: number
+        title: "Valor do negócio"
+        description: "Valor negociado do negócio em R$, como atributo de linha. Para o TOTAL use a measure total_deal_amount. Numérico."
+        meta:
+          avoid: "para somar use total_deal_amount"
+      - name: created_at
+        sql: "CAST(created_at AS TIMESTAMP)"
+        type: time
+        title: "Criado em"
+        description: "Data de criação do negócio. Use como timeDimension para séries de entrada no pipeline. Timestamp."
+      - name: closed_at
+        sql: "CAST(closed_at AS TIMESTAMP)"
+        type: time
+        title: "Fechado em"
+        description: "Data em que o negócio foi decidido (ganho ou perdido). NULL enquanto aberto. Use como timeDimension para séries de fechamento."
+        meta:
+          coverage: "NULL enquanto o negócio está aberto — é semântica, não lacuna"
+
+    segments:
+      - name: won_deals
+        sql: "{CUBE}.status = 'won'"
+        title: "Negócios ganhos"
+        description: "Apenas negócios GANHOS. FICAM FORA perdidos e abertos. Use com qualquer measure para recortar o pipeline fechado com sucesso."
+      - name: lost_deals
+        sql: "{CUBE}.status = 'lost'"
+        title: "Negócios perdidos"
+        description: "Apenas negócios PERDIDOS. É o recorte para tabular lost_reason. FICAM FORA ganhos e abertos."
+      - name: open_deals
+        sql: "{CUBE}.status = 'open'"
+        title: "Negócios abertos"
+        description: "Apenas negócios EM ANDAMENTO (foto do estado atual). FICAM FORA os já decididos."
+
+    measures:
+      - name: deals_count
+        sql: deal_id
+        type: count_distinct
+        format: number
+        title: "Qtd. de negócios"
+        description: "Negócios distintos no recorte, em qualquer status. Para só os ganhos use won_deals_count. NÃO-aditivo (count distinct) — recalcule por recorte."
+        meta:
+          granularity: "negócio"
+          additive: false
+{{ m.deal_stage_measures() }}
+      - name: total_deal_amount
+        sql: deal_amount
+        type: sum
+        format: currency
+        title: "Valor total dos negócios"
+        description: "Soma do valor negociado (R$) dos negócios do recorte. Combine com o segment won_deals para o valor efetivamente fechado. Grão de negócio; aditivo."
+        meta:
+          granularity: "negócio"
+          additive: true
+      - name: avg_days_to_close
+        sql: "date_diff('day', created_at, closed_at)"
+        type: avg
+        format: number
+        title: "Dias médios até fechar"
+        description: "Média de dias entre a criação e o fechamento do negócio. Considera apenas negócios já DECIDIDOS (abertos não têm data de fechamento e ficam fora da média, não entram como zero). NÃO-aditivo (média) — recalcule por recorte."
+        meta:
+          additive: false
+          coverage: "apenas negócios decididos (closed_at preenchido)"
