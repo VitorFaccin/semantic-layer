@@ -1,0 +1,6 @@
+# Test dependencies for the semantic-layer test suite.
+pytest==8.3.4
+pytest-xdist==3.6.1
+requests==2.32.3
+# Only needed for the `warehouse`-marked parity tests, which query the local DuckDB directly:
+duckdb==1.5.5
