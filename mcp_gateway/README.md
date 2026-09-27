@@ -7,19 +7,16 @@
 | **Status** | PoC · local-first (see root `README.md` / `CLAUDE.md`) |
 | **Upstream** | Cube Core REST API (`/cubejs-api/v1`) on the same pod |
 
-## Jira cards
+## Gateway behavior
 
-
-### `CAA-629` — describe_view forwards view folders (2026-08-07)
+### describe_view forwards view folders
 
 `ViewDetail` gains `folders` (name + qualified members), forwarded 1:1 from `/meta`, and the
 `describe_view` docstring instructs the agent to navigate wide views by folder (a folder name
 can itself be a guardrail — "Valores por linha (não somar)"). Integration test asserts the
 round trip on `subscription` (17 folders) and that every folder member exists in the view.
 
-Append-only log — add one topic per card that touches this service (most recent first).
-
-### (no card yet) — `segments` support in the tools (2026-07-27)
+### Segments support in the tools
 
 The gateway used to hide segments entirely: the models had no field for them and `_build_query` had
 no parameter. Now `ViewSummary.segments` (names) and `ViewDetail.segments` (`MemberInfo`, so the
@@ -30,7 +27,7 @@ opens its guidance with SEGMENTS FIRST: if a named segment matches the audience 
 it instead of rebuilding the condition. Tests cover the unit normalization, the round trip, and that a
 segment travelling through a join filters instead of multiplying.
 
-### (no card yet) — `describe_view` forwards view-level `meta` (2026-07-27)
+### describe_view forwards view-level meta
 
 `ViewDetail` gained a `meta` field, so view-level `meta.ai_context` now reaches the agent — until now
 the gateway silently dropped it (only member-level `meta` was mapped, via `_member()`). `list_metrics`
@@ -39,7 +36,7 @@ does not pay the token cost of every view's prose. `run_query`/`validate_query` 
 the whole round trip (YAML → `/meta` → `ViewDetail`) plus member-level `meta`, so a refactor can't
 drop either silently.
 
-### `DSD-1594` — Forward the agent's role to Cube (2026-06-24)
+### The agent's role is forwarded to Cube
 
 The gateway now transports access claims. `TokenAuthMiddleware` validates a signed **agent JWT**
 (`AGENT_JWT_SECRET`); `app/auth.py` reads it from the request (FastMCP `get_http_headers`) and
@@ -47,14 +44,14 @@ The gateway now transports access claims. `TokenAuthMiddleware` validates a sign
 context (`level/domains/is_admin/user_id`). No HTTP context / invalid token → empty claims (Cube
 applies its fallback). New `config.agent_jwt_secret`. See `docs/access-control.md`.
 
-### `DSD-1580` — English docstrings + existence routing (2026-06-16)
+### Docstrings and existence routing
 
 Tool docstrings and this README translated to English (standard: non-AI content in English; only Cube
 member description/title/meta stay Portuguese). `run_query` gained the existence rule (absence in a
 metric ≠ non-existence → check the catalog dimensions products/reps/customers). `date_range`/`filters`/
 `order` are strongly typed + defensively normalized.
 
-### `DSD-1576` — MCP Gateway (FastMCP/FastAPI) (2026-06-15)
+### Tools and auth
 
 Gateway scaffold connecting the AI to the semantic layer: FastAPI hosting a FastMCP server
 (Streamable HTTP) that translates MCP tools into calls to the Cube REST API. 5 tools
@@ -121,4 +118,4 @@ pytest            # integration tests skip if Cube is down (CUBE_URL); unit test
 AI agent ──MCP/HTTP──▶ mcp_gateway (FastAPI+FastMCP) ──REST──▶ Cube Core ──▶ warehouse
                         (views only, area=admin)       localhost:4000 (same pod)
 ```
-Details and decisions: `CLAUDE.md` (Core != Cloud; gateway is a separate service) and card DSD-1576.
+Details and decisions: `CLAUDE.md` (Core != Cloud; gateway is a separate service).
